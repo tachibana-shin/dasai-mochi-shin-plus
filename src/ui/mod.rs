@@ -1,5 +1,4 @@
-//! On-screen UI: the screen router ([`router`]) and the individual screens
-//! ([`screens`]). `.qgif` decoding/playback lives in [`crate::qgif`].
+//! On-screen UI screens (each a self-contained display routine / scene).
 
-pub mod router;
-pub mod screens;
+pub mod clock;
+pub mod face_player;
