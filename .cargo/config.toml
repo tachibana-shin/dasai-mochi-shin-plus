@@ -14,3 +14,6 @@ build-std = ["alloc", "core"]
 MCU="esp32c3"
 # Note: this variable is not used by the pio builder (`cargo build --features pio`)
 ESP_IDF_VERSION = "v5.2.2"
+# Required for simultaneous SoftAP + Station (esp-radio coex).
+ESP_RADIO_CONFIG_EVENT_CHANNEL_CAPACITY = "4"
+ESP_LOG = "info"
