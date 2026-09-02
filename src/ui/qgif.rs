@@ -8,7 +8,8 @@
 use esp_hal::delay::Delay;
 use esp_println::println;
 
-use crate::drivers::screen::{draw_frame_centered, Display, FRAME_BUF_SIZE};
+use crate::config;
+use crate::drivers::screen::{draw_frame_centered, Display};
 use crate::qgif::QgifHeader;
 
 /// Play a `.qgif` from a byte slice for one full cycle.
@@ -30,7 +31,7 @@ pub fn play_from_memory(display: &mut Display, data: &[u8], delay: &Delay) {
 
     for frame in 0..header.frame_count as usize {
         let fb = header.frame_bytes as usize;
-        let mut buf = [0u8; FRAME_BUF_SIZE];
+        let mut buf = [0u8; config::SCREEN_FRAME_BUF_SIZE];
         if read_at(
             header.data_offset + (frame as u32) * (header.frame_bytes as u32),
             &mut buf[..fb],

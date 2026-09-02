@@ -3,6 +3,7 @@
 use esp_hal::delay::Delay;
 use oled_i2c::{Font, TextOverflow};
 
+use crate::config;
 use crate::drivers::screen::Display;
 
 /// Duration the boot banner is shown, in milliseconds.
@@ -21,9 +22,7 @@ pub fn show_boot_banner(display: &mut Display, delay: &Delay, font: &Font<'_>) {
     // Clear the last intro frame so the text isn't drawn on top of it.
     display.clear_buffer();
     // Center the (3-line) message vertically.
-    let y = (crate::drivers::screen::SCREEN_HEIGHT as i16
-        - display.line_height() as i16 * 3)
-        / 2;
+    let y = (config::SCREEN_HEIGHT as i16 - display.line_height() as i16 * 3) / 2;
     display.draw_str_with(0, y, MSG, font);
     let _ = display.flush();
 

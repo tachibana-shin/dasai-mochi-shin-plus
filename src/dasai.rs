@@ -111,7 +111,7 @@ fn play_faces_from_sd(display: &mut screen::Display, delay: &Delay, driver: SdDr
         }
     };
 
-    let mut frame_buf = [0u8; screen::FRAME_BUF_SIZE];
+    let mut frame_buf = [0u8; config::SCREEN_FRAME_BUF_SIZE];
     let mut face_idx = 0usize;
 
     // If a custom `.bdf` font is present, show the banner again so the boot

@@ -10,23 +10,12 @@ use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::peripherals::{GPIO20, GPIO21, I2C0};
 use esp_hal::time::Rate;
 use esp_hal::Blocking;
-use oled_i2c::{Oled, OledConfig};
+use oled_i2c::Oled;
 
 use crate::config;
 
 /// The concrete display: SH1106 OLED, 128x64, on the board's I2C0 bus.
 pub type Display = Oled<I2c<'static, Blocking>>;
-
-/// Display physical size (the Dasai Mochi panel is 128x64).
-pub const SCREEN_WIDTH: usize = 128;
-pub const SCREEN_HEIGHT: usize = 64;
-/// One frame buffer page-major layout: 128 columns x 64 rows / 8 = 1024 bytes.
-pub const FRAME_BUF_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT / 8;
-
-/// I2C clock speed for the display bus (400 kHz fast-mode).
-pub const SCREEN_I2C_FREQ_KHZ: u32 = 400;
-/// Default screen brightness / contrast (0..=255).
-pub const SCREEN_DEFAULT_CONTRAST: u8 = 150;
 
 /// Initialise the SH1106 OLED over I2C0 (SDA=GPIO20, SCL=GPIO21).
 ///
@@ -35,18 +24,14 @@ pub const SCREEN_DEFAULT_CONTRAST: u8 = 150;
 pub fn init(i2c0: I2C0<'static>, sda: GPIO20<'static>, scl: GPIO21<'static>) -> Display {
     let i2c = I2c::new(
         i2c0,
-        I2cConfig::default().with_frequency(Rate::from_khz(SCREEN_I2C_FREQ_KHZ)),
+        I2cConfig::default().with_frequency(Rate::from_khz(config::SCREEN_I2C_FREQ_KHZ)),
     )
     .expect("I2C init failed")
     .with_sda(sda)
     .with_scl(scl);
 
-    Oled::new(
-        i2c,
-        config::SH1106_I2C_ADDR,
-        OledConfig::sh1106_128x64().with_contrast(SCREEN_DEFAULT_CONTRAST),
-    )
-    .expect("OLED init failed")
+    Oled::new(i2c, config::SH1106_I2C_ADDR, config::SCREEN_CONFIG)
+        .expect("OLED init failed")
 }
 
 /// Set the display brightness / contrast (0..=255).
@@ -77,12 +62,12 @@ pub fn clear(display: &mut Display) {
 /// inverted relative to the display, so every source byte is XOR-ed with `0xFF`
 /// first (same as the C++ `gifRenderFrame`).
 pub fn draw_frame_centered(display: &mut Display, data: &[u8], width: u16, height: u16) {
-    let mut framebuf = [0u8; FRAME_BUF_SIZE];
+    let mut framebuf = [0u8; config::SCREEN_FRAME_BUF_SIZE];
     let row_bytes = (width as usize + 7) / 8;
 
     // Centre offsets.
-    let x_off = (SCREEN_WIDTH.saturating_sub(width as usize)) / 2;
-    let y_off = (SCREEN_HEIGHT.saturating_sub(height as usize)) / 2;
+    let x_off = (config::SCREEN_WIDTH as usize).saturating_sub(width as usize) / 2;
+    let y_off = (config::SCREEN_HEIGHT as usize).saturating_sub(height as usize) / 2;
 
     for row in 0..height as usize {
         let dst_row = row + y_off;
@@ -92,7 +77,7 @@ pub fn draw_frame_centered(display: &mut Display, data: &[u8], width: u16, heigh
             let src = data[row * row_bytes + col / 8];
             let on = ((src ^ 0xFF) >> (7 - (col % 8))) & 1;
             if on == 1 {
-                framebuf[page * SCREEN_WIDTH + x_off + col] |= 1 << row_bit;
+                framebuf[page * config::SCREEN_WIDTH as usize + x_off + col] |= 1 << row_bit;
             }
         }
     }

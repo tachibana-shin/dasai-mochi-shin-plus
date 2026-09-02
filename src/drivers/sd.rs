@@ -21,12 +21,11 @@ use esp_hal::Blocking;
 
 use sdmmc_fs::{DummyTime, SuperFloppy};
 
+use crate::config;
+
 // Re-export the whole generic FAT API so `crate::drivers::sd` stays the single
 // SD namespace used by the rest of the firmware.
 pub use sdmmc_fs::*;
-
-/// SPI clock for the SD card (400 kHz is the safe init speed).
-const SD_SPI_FREQ_KHZ: u32 = 400;
 
 // ---------------------------------------------------------------------------
 // Concrete block device type for this board
@@ -87,7 +86,7 @@ pub fn new(driver: SdDriver) -> Option<Sd> {
     let spi = Spi::new(
         driver.spi2,
         SpiConfig::default()
-            .with_frequency(Rate::from_khz(SD_SPI_FREQ_KHZ))
+            .with_frequency(Rate::from_khz(config::SD_SPI_FREQ_KHZ))
             .with_mode(SpiMode::_0),
     )
     .ok()?
