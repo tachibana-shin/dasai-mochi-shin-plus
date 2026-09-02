@@ -1,4 +1,6 @@
 /target
-# oled-i2c has its own Cargo.lock (it is a standalone workspace); the parent
-# firmware keeps its root Cargo.lock, so ignore the nested one.
-crates/oled-i2c/Cargo.lock
+# oled-i2c is a separate git repository living inside this tree. The parent
+# firmware pulls it in via a path dependency, but does NOT track its files
+# (that history lives in crates/oled-i2c/.git). If you need to build the
+# firmware from a fresh clone, check out oled-i2c into crates/oled-i2c first.
+crates/oled-i2c/
