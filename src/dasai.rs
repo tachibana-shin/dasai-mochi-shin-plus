@@ -311,19 +311,16 @@ fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) ->
     let mut frame_buf = [0u8; FRAME_BUF_SIZE];
     let mut face_idx = 0usize;
 
-    // Load a custom `.bdf` font from SD if present, then show a scrolling boot
-    // banner (falling back to the built-in 5x7 font when no FONT.BDF exists).
-    match try_load_font(&sd) {
-        Some(font) => {
-            println!(
-                "FONT.BDF loaded: {} glyphs, charset {:#06x}..{:#06x}",
-                font.glyph_count(),
-                font.first(),
-                font.last()
-            );
-            show_boot_banner(display, delay, &font.font());
-        }
-        None => show_boot_banner(display, delay, &FONT_5X7),
+    // If a custom `.bdf` font is present, show the banner again so the boot
+    // font is visible (the default 5x7 banner already ran in enter_loop).
+    if let Some(font) = try_load_font(&sd) {
+        println!(
+            "FONT.BDF loaded: {} glyphs, charset {:#06x}..{:#06x}",
+            font.glyph_count(),
+            font.first(),
+            font.last()
+        );
+        show_boot_banner(display, delay, &font.font());
     }
 
     // Infinite playback loop. Each face opens its file by absolute path; the
@@ -413,6 +410,10 @@ pub fn enter_loop(p: Peripherals) -> ! {
     // ---- Boot intro from firmware memory ----
     println!("Dasai Mochi Shin — Rust edition");
     play_from_memory(&mut display, INTRO_QGIF, &delay);
+
+    // ---- Scrolling boot banner (always shows, independent of the SD card) ----
+    println!("boot banner");
+    show_boot_banner(&mut display, &delay, &FONT_5X7);
 
     // ---- SD card face playback (re-init SD card each cycle) ----
     println!("initialising SD card...");
