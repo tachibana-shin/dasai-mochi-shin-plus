@@ -14,7 +14,7 @@ use crate::config;
 use crate::drivers::screen::{self, Display};
 use crate::drivers::sd;
 use crate::qgif::{assets::INTRO_QGIF, QgifHeader};
-use crate::ui::router;
+use crate::router;
 
 /// Entry point: set up display + SD, then run Dasai Mochi forever.
 pub fn enter_loop(p: Peripherals) -> ! {

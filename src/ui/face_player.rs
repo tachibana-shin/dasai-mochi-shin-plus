@@ -1,12 +1,11 @@
-//! Face player screen: plays `.qgif` faces from the SD card, with a brief
-//! analog clock between faces.
+//! Face player screen: plays `.qgif` faces from the SD card.
 //!
 //! Design: setup is separated from the render loop so the router can own the
 //! screen lifecycle without re-initialising the SD card every frame.
 //! - [`Player::new`] does the one-time setup (init SD, collect faces) and
 //!   returns `None` only if the card is unusable/empty.
-//! - [`Player::step`] plays a single face + the interlude clock and returns the
-//!   [`Screen`] to switch to next.
+//! - [`Player::step`] plays a single face and returns the [`Screen`] to switch
+//!   to next (an analog-clock interlude between faces).
 
 use esp_hal::delay::Delay;
 use esp_println::{print, println};
@@ -15,8 +14,7 @@ use crate::config;
 use crate::drivers::screen;
 use crate::drivers::sd::{self, FacesInfo, Sd, SdDriver};
 use crate::qgif::QgifHeader;
-use crate::ui::router::Screen;
-use crate::ui::screens::clock;
+use crate::router::Screen;
 
 /// Owns the face-player state: an initialised SD card and the face list.
 /// Setup happens once in [`Player::new`].
@@ -54,7 +52,7 @@ impl Player {
         })
     }
 
-    /// Play one face (plus the clock interlude) and return the next screen.
+    /// Play one face and return the next screen.
     ///
     /// `Sd` uses interior mutability (`&self` methods), so it coexists with the
     /// `&mut Display` borrow without fighting the borrow checker.
@@ -113,10 +111,8 @@ impl Player {
         }
 
         file.close();
-        // Brief clock between faces.
-        clock::show_clock(display, delay, config::MOCHI_CLOCK_DURATION as u32);
-
+        // Hand off to the clock screen for an interlude before the next face.
         self.face_idx = (self.face_idx + 1) % self.info.faces.len();
-        Screen::FacePlayer
+        Screen::Clock
     }
 }

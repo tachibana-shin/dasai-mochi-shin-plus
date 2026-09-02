@@ -9,6 +9,7 @@ mod app;
 mod config;
 mod drivers;
 mod qgif;
+mod router;
 mod ui;
 
 use esp_backtrace as _;

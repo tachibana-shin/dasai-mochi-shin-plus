@@ -1,9 +1,9 @@
-//! Analog clock shown on the display between faces.
+//! Analog clock screen, shown as an interlude between played faces.
 //!
 //! The board has no RTC, so the hands tick with **uptime** (`Instant` counts
 //! since boot). This showcases the `oled-i2c` shape API (`draw_circle` /
 //! `draw_line` / `fill_circle`) instead of a blank screen, animating once a
-//! second like a real clock.
+//! second like a real clock. The router enters this screen after each face.
 
 use esp_hal::delay::Delay;
 use esp_hal::time::Instant;

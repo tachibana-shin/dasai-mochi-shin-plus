@@ -1,27 +1,28 @@
 //! Lightweight screen router.
 //!
-//! The boot screen is intentionally **not** routed: it runs exactly once at
-//! startup (from `app::enter_loop`). This router only manages the screens that
-//! loop/recur (face player, clock, settings, ...). Each screen returns the
+//! The boot banner is intentionally **not** routed: it runs exactly once at
+//! startup (from `app::enter_loop`). This router only manages the looping
+//! screens (face player, clock, settings, ...). Each screen returns the
 //! [`Screen`] to switch to next; a simple `enum` + `match` dispatch keeps this
 //! tiny and embedded-friendly.
 //!
-//! Face-player setup (SD init, face collection, font load) happens once when
-//! we enter that screen, and is kept separate from its per-face render step.
+//! Face-player setup (SD init, face collection) happens once when we enter that
+//! screen, and is kept separate from its per-face render step.
 
 use esp_hal::delay::Delay;
 
 use crate::drivers::screen::Display;
 use crate::drivers::sd::SdDriver;
 use crate::qgif::{assets::INTRO_QGIF, QgifHeader};
-use crate::ui::screens::face_player;
+use crate::ui::clock;
+use crate::ui::face_player;
 
-/// The current on-screen screen. Add new screens (clock, settings, ...) here
-/// and extend [`run`]'s match.
+/// The current on-screen screen. Add new screens (settings, ...) here and
+/// extend [`run`]'s match.
 #[derive(Clone, Copy)]
 pub enum Screen {
     FacePlayer,
-    // Clock, Settings, ... (upcoming screens)
+    Clock,
 }
 
 /// Initialise the face-player screen, then run the router loop forever.
@@ -40,11 +41,19 @@ pub fn run(display: &mut Display, delay: &Delay, driver: SdDriver) -> ! {
         }
     };
 
+    let mut current = Screen::FacePlayer;
     loop {
-        let next = player.step(display, delay);
-        match next {
-            Screen::FacePlayer => continue,
-            // Route other screens here as they are added.
-        }
+        current = match current {
+            Screen::FacePlayer => player.step(display, delay),
+            // An analog clock interlude between faces.
+            Screen::Clock => {
+                clock::show_clock(
+                    display,
+                    delay,
+                    crate::config::MOCHI_CLOCK_DURATION as u32,
+                );
+                Screen::FacePlayer
+            }
+        };
     }
 }
