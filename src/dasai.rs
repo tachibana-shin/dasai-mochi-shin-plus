@@ -245,17 +245,36 @@ fn try_load_font(sd: &sd::Sd) -> Option<BdfFont<FONT_BITMAP_CAP, FONT_SPAN_CAP>>
     }
 }
 
-/// Show a short, centered boot banner with the given (runtime) font.
+/// Duration of the scrolling boot banner, in milliseconds.
+const BOOT_BANNER_MS: i64 = 4000;
+
+/// Show a short, horizontally scrolling ("marquee") boot banner with the given
+/// (runtime) font, demonstrating the driver's `scroll_text_frame` API.
 fn show_boot_banner(display: &mut Display, delay: &Delay, font: &BdfFont<FONT_BITMAP_CAP, FONT_SPAN_CAP>) {
     const MSG: &str = "DASAI MOCHI";
-    let (w, h) = display.measure_text_with(MSG, &font.font());
-    let x = (SCREEN_WIDTH as i16 - w as i16) / 2;
-    let y = (SCREEN_HEIGHT as i16 - h as i16) / 2;
-    let _ = display.clear();
-    display.draw_str_with(x, y, MSG, &font.font());
-    let _ = display.flush();
-    delay.delay_millis(1500);
-    let _ = display.clear();
+    let font = font.font();
+    let tw = display.measure_text_with(MSG, &font).0 as i16;
+    let w = SCREEN_WIDTH as i16;
+    let x = 0i16;
+    let y = (SCREEN_HEIGHT as i16 - display.line_height() as i16) / 2;
+
+    // Sweep the whole message in from the right and out through the left,
+    // then loop. Advancing ~2px every ~40ms reads as a smooth marquee.
+    let mut remaining = BOOT_BANNER_MS;
+    let mut offset = -w; // start fully off the right edge
+    while remaining > 0 {
+        display.clear_buffer();
+        display.scroll_text_frame(x, y, MSG, w as u16, offset, &font);
+        let _ = display.flush();
+        let step = 40u32.min(remaining as u32);
+        delay.delay_millis(step);
+        remaining -= step as i64;
+        offset += 2;
+        if offset > tw {
+            offset = -w;
+        }
+    }
+    let _ = display.clear_buffer();
     let _ = display.flush();
 }
 
