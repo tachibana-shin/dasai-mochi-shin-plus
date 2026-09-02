@@ -43,6 +43,18 @@ pub fn set_brightness(display: &mut Display, value: u8) {
     let _ = display.set_contrast(value);
 }
 
+/// Blank the panel (display-off command). The RAM contents are preserved, so a
+/// later [`display_on`] instantly restores the frame that was on screen —
+/// this is what powers "single tap = sleep, tap again = wake" behaviour.
+pub fn display_off(display: &mut Display) {
+    let _ = display.display_off();
+}
+
+/// Re-enable the panel after [`display_off`], restoring the previous frame.
+pub fn display_on(display: &mut Display) {
+    let _ = display.display_on();
+}
+
 /// Clear the frame buffer and push it to the panel.
 #[allow(dead_code)]
 pub fn clear(display: &mut Display) {

@@ -4,13 +4,15 @@
 //! counts since boot). This showcases the `oled-i2c` shape API (`draw_circle` /
 //! `draw_line` / `fill_circle`) instead of a blank screen, animating once a
 //! second like a real clock. The router enters this screen after each face.
+//! A **single tap** sleeps the display (returns [`Screen::Off`]) and wakes back
+//! to this clock; a **triple-tap** jumps straight to settings.
 
 use esp_hal::time::Instant as EspInstant;
 
 use crate::config;
 use crate::drivers::screen::Display;
 use crate::drivers::tap::{self, Gesture, TapChannel};
-use crate::router::Screen;
+use crate::router::{Prev, Screen};
 
 /// Approximate `sin(deg)` as a fixed-point integer scaled by 1024, using the
 /// Bhaskara I rational approximation (error < 0.003 — irrelevant on a 1bpp
@@ -85,8 +87,11 @@ pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel
 
         let step = 200u32.min(remaining as u32);
         embassy_time::Timer::after_millis(step as u64).await;
-        if tap::try_tap(tap) == Some(Gesture::TripleTap) {
-            return Screen::Settings;
+        match tap::try_tap(tap) {
+            Some(Gesture::TripleTap) => return Screen::Settings,
+            // Single tap: sleep the display (returns to the same clock on wake).
+            Some(Gesture::Tap) => return Screen::Off(Prev::Clock),
+            _ => {}
         }
         remaining -= step as i64;
     }

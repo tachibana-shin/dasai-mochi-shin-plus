@@ -10,9 +10,12 @@
 //! screen, and is kept separate from its per-face render step.
 //!
 //! Gestures come from the shared tap channel (filled by the lightweight sensor
-//! task in [`crate::task`]) — the router never touches the GPIO directly.
+//! task in [`crate::task`]) — the router never touches the GPIO directly. A
+//! single tap on the face player or clock sleeps the display (blank via the
+//! OLED display-off command); tapping again wakes it and restores that screen
+//! ([`Screen::Off`]).
 
-use crate::drivers::screen::Display;
+use crate::drivers::screen::{self, Display};
 use crate::drivers::sd::SdDriver;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::qgif::{assets::INTRO_QGIF, QgifHeader};
@@ -22,11 +25,28 @@ use crate::ui::settings;
 
 /// The current on-screen screen. Add new screens (settings, ...) here and
 /// extend [`run`]'s match.
+///
+/// [`Screen::Off`] records the screen that was active when the display went to
+/// sleep, so a single tap wakes and returns straight to it. The restore target
+/// is a small [`Prev`] enum rather than a nested [`Screen`] — this avoids heap
+/// (no `Box`) while still letting the router tell a "wake into face player"
+/// from a "wake into clock".
 #[derive(Clone, Copy)]
 pub enum Screen {
     FacePlayer,
     Clock,
     Settings,
+    /// Display asleep (blank). Carries which screen to restore on wake.
+    Off(Prev),
+}
+
+/// The screens a [`Screen::Off`] can return to on wake. Only the face player
+/// and clock support sleep-to-wake, so this is intentionally smaller than
+/// [`Screen`] (never recursive, hence no heap needed).
+#[derive(Clone, Copy)]
+pub enum Prev {
+    FacePlayer,
+    Clock,
 }
 
 /// Initialise the face-player screen, then run the router loop forever.
@@ -80,6 +100,19 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
                 } else {
                     // No SD: stay in settings (re-enter it).
                     Screen::Settings
+                }
+            }
+            // Display is asleep. A single tap wakes it and restores `prev`.
+            // The sleep is triggered when FacePlayer/Clock return `Off`, which
+            // lands here on the next loop iteration.
+            Screen::Off(prev) => {
+                screen::display_off(display);
+                let _wake = tap::wait_tap(tap).await;
+                screen::display_on(display);
+                // Restore the screen that was active before sleeping.
+                match prev {
+                    Prev::FacePlayer => Screen::FacePlayer,
+                    Prev::Clock => Screen::Clock,
                 }
             }
         };
