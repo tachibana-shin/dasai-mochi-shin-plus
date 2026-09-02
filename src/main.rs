@@ -1,35 +1,27 @@
-//! Blinks an LED
+//! Dasai Mochi Shin — ESP32-C3 firmware (Rust rewrite)
 //!
-//! The following wiring is assumed:
-//! - LED => GPIO8
+//! Plays animated `.qgif` face files from an SD card on a 128x64 SH1106 OLED.
 
 #![no_std]
 #![no_main]
 
+mod config;
+mod dasai;
+mod drivers;
+mod intro;
+mod qgif;
+mod sh1106;
+
 use esp_backtrace as _;
-use esp_hal::{
-    delay::Delay,
-    gpio::{Level, Output, OutputConfig},
-    main,
-};
 use esp_println::println;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[main]
+#[esp_hal::main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    let config = OutputConfig::default();
-    let mut led = Output::new(peripherals.GPIO8, Level::High, config);
+    println!("Dasai Mochi Shin - boot");
 
-    let delay = Delay::new();
-
-    loop {
-        led.toggle();
-        delay.delay_millis(500);
-        led.toggle();
-        println!("Blink!");
-        delay.delay_millis(1000);
-    }
+    dasai::enter_loop(peripherals);
 }

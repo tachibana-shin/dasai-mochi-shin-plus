@@ -1,13 +1,14 @@
 [package]
-name = "esp32-c3-super-mini-rust"
-authors = ["Petr Gadorek <hahihula@gmail.com>"]
+name = "dasai-mochi-shin"
+authors = ["Tachibana Shin"]
 version = "0.1.0"
 edition = "2021"
+description = "Dasai Mochi Shin - ESP32-C3 firmware (Rust rewrite)"
 
 [dependencies]
 esp-backtrace = { version = "0.19", features = ["esp32c3", "panic-handler", "println"] }
 esp-println = { version = "0.17", default-features = false, features = ["esp32c3", "uart"] }
-esp-hal = { version = "1.1.1", package = "esp-hal" , features = [
+esp-hal = { version = "1.1.2", package = "esp-hal" , features = [
    "esp32c3",
    "unstable",
 ]}
@@ -20,8 +21,9 @@ smoltcp = { version = "0.12", default-features=false, features = [ "proto-ipv4",
 critical-section = "1.2"
 esp-bootloader-esp-idf = { version="0.5", features=["esp32c3"]}
 
-gc9a01-rs = { version = "0.4.2", features = ["graphics"] }
-display-interface = "0.5"
-display-interface-spi = "0.5"
+# SD card (FAT) filesystem reading over SPI
+embedded-sdmmc = "0.9"
+# Shared SPI bus -> SpiDevice bridge (for SD card + CS)
 embedded-hal-bus = "0.3"
-embedded-graphics = "0.8"
+# Fixed-size collections (Vec, String) for no_std
+heapless = "0.8"
