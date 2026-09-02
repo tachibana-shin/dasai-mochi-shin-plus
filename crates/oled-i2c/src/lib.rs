@@ -180,6 +180,9 @@ pub struct Oled<I: I2c> {
     text_wrap: bool,
     /// Currently selected font.
     font: &'static Font,
+    /// Panel rotation: 0 = none, 1 = 90° CW, 2 = 180°, 3 = 270° CW,
+    /// applied on the drawing APIs (the raw frame buffer stays physical).
+    rotation: u8,
 }
 
 impl<I: I2c> Oled<I> {
@@ -195,6 +198,7 @@ impl<I: I2c> Oled<I> {
             text_color: true,
             text_wrap: false,
             font: &FONT_5X7,
+            rotation: 0,
         };
         display.send_init()?;
         Ok(display)
@@ -203,6 +207,36 @@ impl<I: I2c> Oled<I> {
     /// The config this display was created with.
     pub fn config(&self) -> OledConfig {
         self.config
+    }
+
+    /// Logical panel width in pixels for the current rotation (swapped with
+    /// the height for rotations 1 and 3).
+    pub fn width(&self) -> u16 {
+        match self.rotation & 3 {
+            1 | 3 => self.config.height as u16,
+            _ => self.config.width as u16,
+        }
+    }
+
+    /// Logical panel height in pixels for the current rotation.
+    pub fn height(&self) -> u16 {
+        match self.rotation & 3 {
+            1 | 3 => self.config.width as u16,
+            _ => self.config.height as u16,
+        }
+    }
+
+    /// Rotate the drawing APIs (Adafruit GFX `setRotation`): the frame
+    /// buffer and [`Oled::flush`] stay physical, all pixel-addressing APIs
+    /// transparently map logical coordinates. `rotation & 3` is applied, so
+    /// repeats are harmless.
+    pub fn set_rotation(&mut self, rotation: u8) {
+        self.rotation = rotation & 3;
+    }
+
+    /// The current rotation (0..=3).
+    pub fn get_rotation(&self) -> u8 {
+        self.rotation & 3
     }
 
     /// Send one command byte (prefixed with the command control byte).
@@ -298,16 +332,28 @@ impl<I: I2c> Oled<I> {
         &mut self.fb[..self.config.frame_buf_size()]
     }
 
-    /// Set or clear a single pixel in the internal frame buffer.
+    /// Set or clear a single pixel in the internal frame buffer. Coordinates
+    /// are logical (respect the current rotation); they are mapped to the
+    /// physical page-major buffer before writing.
     pub fn set_pixel(&mut self, x: i16, y: i16, on: bool) {
-        let w = self.config.width as i16;
-        let h = self.config.height as i16;
+        let w = self.width() as i16;
+        let h = self.height() as i16;
         if x < 0 || y < 0 || x >= w || y >= h {
             return;
         }
-        let (x, y) = (x as usize, y as usize);
-        let idx = (y / 8) * self.config.width as usize + x;
-        let mask = 1 << (y % 8);
+        // Map logical -> physical (same transform as Adafruit GFX).
+        let (px, py) = match self.rotation {
+            1 => (self.config.width as i16 - 1 - y, x),
+            2 => (
+                self.config.width as i16 - 1 - x,
+                self.config.height as i16 - 1 - y,
+            ),
+            3 => (y, self.config.height as i16 - 1 - x),
+            _ => (x, y),
+        };
+        let (px, py) = (px as usize, py as usize);
+        let idx = (py / 8) * self.config.width as usize + px;
+        let mask = 1 << (py % 8);
         if on {
             self.fb[idx] |= mask;
         } else {
@@ -323,11 +369,11 @@ impl<I: I2c> Oled<I> {
     /// `drawFastHLine`).
     pub fn draw_hline(&mut self, x: i16, y: i16, w: u16, on: bool) {
         let y = y.max(0);
-        if y >= self.config.height as i16 {
+        if y >= self.height() as i16 {
             return;
         }
         let x_start = x.max(0);
-        let x_end = (x + w as i16).min(self.config.width as i16);
+        let x_end = (x + w as i16).min(self.width() as i16);
         for px in x_start..x_end {
             self.set_pixel(px, y, on);
         }
@@ -337,11 +383,11 @@ impl<I: I2c> Oled<I> {
     /// `drawFastVLine`).
     pub fn draw_vline(&mut self, x: i16, y: i16, h: u16, on: bool) {
         let x = x.max(0);
-        if x >= self.config.width as i16 {
+        if x >= self.width() as i16 {
             return;
         }
         let y_start = y.max(0);
-        let y_end = (y + h as i16).min(self.config.height as i16);
+        let y_end = (y + h as i16).min(self.height() as i16);
         for py in y_start..y_end {
             self.set_pixel(x, py, on);
         }
@@ -890,7 +936,7 @@ impl<I: I2c> Oled<I> {
             '\r' => {}
             _ => {
                 let adv = self.font.advance(ch) as i16 * self.text_size as i16;
-                if self.text_wrap && self.cursor.0 + adv > self.config.width as i16 {
+                if self.text_wrap && self.cursor.0 + adv > self.width() as i16 {
                     self.cursor = (0, self.cursor.1 + self.line_height() as i16);
                 }
                 if let Some(g) = self.font.glyph_for(ch) {
@@ -1153,6 +1199,68 @@ mod tests {
         let fb = d.fb();
         assert!(pixel(fb, 127, 63));
         assert!(pixel(fb, 127, 0));
+    }
+
+    #[test]
+    fn rotation_maps_pixels_and_swaps_dims() {
+        let mut d = new_display();
+        d.clear();
+        assert_eq!((d.width(), d.height()), (128, 64));
+        assert_eq!(d.get_rotation(), 0);
+
+        // 90° CW: logical (0,0) lands on the physical top-right corner.
+        d.set_rotation(1);
+        assert_eq!((d.width(), d.height()), (64, 128));
+        d.clear();
+        d.set_pixel(0, 0, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 127, 0));
+        assert!(!pixel(fb, 0, 0));
+
+        // 180°: top-left logical -> bottom-right physical.
+        d.set_rotation(2);
+        assert_eq!((d.width(), d.height()), (128, 64));
+        d.clear();
+        d.set_pixel(0, 0, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 127, 63));
+
+        // 270° CW: logical (0,0) -> physical bottom-left, logical bottom
+        // edge of the portrait screen maps back onto the top physical row.
+        d.set_rotation(3);
+        assert_eq!((d.width(), d.height()), (64, 128));
+        d.clear();
+        d.set_pixel(0, 0, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 0, 63));
+        d.clear();
+        d.set_pixel(0, 127, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 127, 63));
+
+        // rotation masks to 0..=3.
+        d.set_rotation(5);
+        assert_eq!(d.get_rotation(), 1);
+        d.set_rotation(4);
+        assert_eq!(d.get_rotation(), 0);
+        assert_eq!((d.width(), d.height()), (128, 64));
+    }
+
+    #[test]
+    fn rotation_applies_to_shapes_and_text() {
+        let mut d = new_display();
+        d.set_rotation(1);
+        d.clear();
+        d.draw_hline(0, 0, 5, true); // logical row 0 -> physical col 127
+        d.fill_circle(10, 10, 3, true);
+        d.draw_str(0, 90, "Hi");
+        let fb = d.fb();
+        // logical row 0 spans physical column 127 (rows 0..=4).
+        assert!(pixel(fb, 127, 0));
+        assert!(pixel(fb, 127, 4));
+        // circle centre (10,10) -> px = 127-10 = 117, py = 10.
+        assert!(pixel(fb, 117, 10));
+        assert!(!pixel(fb, 122, 10));
     }
 
     #[test]
