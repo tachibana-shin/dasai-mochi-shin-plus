@@ -9,10 +9,12 @@
 use esp_hal::i2c::master::I2c;
 use esp_hal::Blocking;
 
-use crate::config::{SCREEN_HEIGHT, SCREEN_WIDTH, SH1106_I2C_ADDR};
+/// Display logical size for the SH1106 128x64.
+pub const SCREEN_WIDTH: usize = 128;
+pub const SCREEN_HEIGHT: usize = 64;
 
-/// One frame buffer for a 128x64 display: 128 columns x 64 rows / 8 = 1024 bytes.
-pub const FRAME_BUF_SIZE: usize = (SCREEN_WIDTH as usize) * (SCREEN_HEIGHT as usize) / 8;
+/// One frame buffer for the display: 128 columns x 64 rows / 8 = 1024 bytes.
+pub const FRAME_BUF_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT / 8;
 
 /// SH1106 I2C command prefix byte.
 const CTRL_CMD: u8 = 0x00;
@@ -22,19 +24,21 @@ const CTRL_DATA: u8 = 0x40;
 /// SH1106 display driver wrapping an I2C master.
 pub struct Sh1106<'a> {
     i2c: I2c<'a, Blocking>,
+    address: u8,
 }
 
 impl<'a> Sh1106<'a> {
-    /// Create a new driver, sending the init sequence.
-    pub fn new(i2c: I2c<'a, Blocking>) -> Self {
-        let mut d = Self { i2c };
+    /// Create a new driver at `address` (typically `0x3C`), sending the init
+    /// sequence.
+    pub fn new(i2c: I2c<'a, Blocking>, address: u8) -> Self {
+        let mut d = Self { i2c, address };
         d.send_init();
         d
     }
 
     /// Send a single command byte.
     fn cmd(&mut self, byte: u8) {
-        let _ = self.i2c.write(SH1106_I2C_ADDR, &[CTRL_CMD, byte]);
+        let _ = self.i2c.write(self.address, &[CTRL_CMD, byte]);
     }
 
     /// SH1106 power-on / init sequence.
@@ -78,11 +82,11 @@ impl<'a> Sh1106<'a> {
             self.cmd(0x10 | 0x00); // Higher column start address
             self.cmd(0xB0 | page); // Page address
 
-            let start = (page as usize) * (SCREEN_WIDTH as usize);
-            let end = start + (SCREEN_WIDTH as usize);
-            let mut data = [CTRL_DATA; (SCREEN_WIDTH as usize) + 1];
+            let start = (page as usize) * SCREEN_WIDTH;
+            let end = start + SCREEN_WIDTH;
+            let mut data = [CTRL_DATA; SCREEN_WIDTH + 1];
             data[1..].copy_from_slice(&buf[start..end]);
-            let _ = self.i2c.write(SH1106_I2C_ADDR, &data);
+            let _ = self.i2c.write(self.address, &data);
         }
     }
 

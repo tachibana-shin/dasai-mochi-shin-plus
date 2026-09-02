@@ -15,7 +15,7 @@ use crate::config;
 use crate::drivers::sd::{self, SdDriver};
 use crate::intro::INTRO_QGIF;
 use crate::qgif::QgifHeader;
-use crate::sh1106::{Sh1106, FRAME_BUF_SIZE};
+use crate::drivers::sh1106::{Sh1106, FRAME_BUF_SIZE};
 
 // ---------------------------------------------------------------------------
 // Display helpers
@@ -257,7 +257,7 @@ pub fn enter_loop(p: Peripherals) -> ! {
     .with_sda(p.GPIO20)
     .with_scl(p.GPIO21);
 
-    let mut display = Sh1106::new(i2c);
+    let mut display = Sh1106::new(i2c, config::SH1106_I2C_ADDR);
     display.set_contrast(150);
 
     // ---- Boot intro from firmware memory ----

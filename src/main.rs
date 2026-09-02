@@ -10,7 +10,6 @@ mod dasai;
 mod drivers;
 mod intro;
 mod qgif;
-mod sh1106;
 
 use esp_backtrace as _;
 use esp_println::println;
