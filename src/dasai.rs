@@ -12,7 +12,7 @@ use esp_hal::time::{Instant, Rate};
 use esp_hal::Blocking;
 use esp_println::{print, println};
 use oled_i2c::bdf::BdfFont;
-use oled_i2c::{Oled, OledConfig};
+use oled_i2c::{Font, Oled, OledConfig, FONT_5X7};
 
 use crate::config;
 use crate::drivers::sd::{self, FacesInfo, SdDriver};
@@ -249,11 +249,11 @@ fn try_load_font(sd: &sd::Sd) -> Option<BdfFont<FONT_BITMAP_CAP, FONT_SPAN_CAP>>
 const BOOT_BANNER_MS: i64 = 4000;
 
 /// Show a short, horizontally scrolling ("marquee") boot banner with the given
-/// (runtime) font, demonstrating the driver's `scroll_text_frame` API.
-fn show_boot_banner(display: &mut Display, delay: &Delay, font: &BdfFont<FONT_BITMAP_CAP, FONT_SPAN_CAP>) {
+/// font (a runtime `.bdf` font if one was loaded, otherwise the built-in
+/// 5x7 font), demonstrating the driver's `scroll_text_frame` API.
+fn show_boot_banner(display: &mut Display, delay: &Delay, font: &Font<'_>) {
     const MSG: &str = "DASAI MOCHI";
-    let font = font.font();
-    let tw = display.measure_text_with(MSG, &font).0 as i16;
+    let tw = display.measure_text_with(MSG, font).0 as i16;
     let w = SCREEN_WIDTH as i16;
     let x = 0i16;
     let y = (SCREEN_HEIGHT as i16 - display.line_height() as i16) / 2;
@@ -264,7 +264,7 @@ fn show_boot_banner(display: &mut Display, delay: &Delay, font: &BdfFont<FONT_BI
     let mut offset = -w; // start fully off the right edge
     while remaining > 0 {
         display.clear_buffer();
-        display.scroll_text_frame(x, y, MSG, w as u16, offset, &font);
+        display.scroll_text_frame(x, y, MSG, w as u16, offset, font);
         let _ = display.flush();
         let step = 40u32.min(remaining as u32);
         delay.delay_millis(step);
@@ -311,15 +311,19 @@ fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) ->
     let mut frame_buf = [0u8; FRAME_BUF_SIZE];
     let mut face_idx = 0usize;
 
-    // Optionally load a custom `.bdf` font from SD and show a boot banner.
-    if let Some(font) = try_load_font(&sd) {
-        println!(
-            "FONT.BDF loaded: {} glyphs, charset {:#06x}..{:#06x}",
-            font.glyph_count(),
-            font.first(),
-            font.last()
-        );
-        show_boot_banner(display, delay, &font);
+    // Load a custom `.bdf` font from SD if present, then show a scrolling boot
+    // banner (falling back to the built-in 5x7 font when no FONT.BDF exists).
+    match try_load_font(&sd) {
+        Some(font) => {
+            println!(
+                "FONT.BDF loaded: {} glyphs, charset {:#06x}..{:#06x}",
+                font.glyph_count(),
+                font.first(),
+                font.last()
+            );
+            show_boot_banner(display, delay, &font.font());
+        }
+        None => show_boot_banner(display, delay, &FONT_5X7),
     }
 
     // Infinite playback loop. Each face opens its file by absolute path; the
