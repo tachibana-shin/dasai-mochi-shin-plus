@@ -86,18 +86,6 @@ pub const CLOCK_R: i16 = 27;
 pub const BOOT_BANNER_MS: i64 = 3000;
 
 // ---------------------------------------------------------------------------
-// Optional runtime `.bdf` bitmap font (loaded from the SD card at boot)
-// ---------------------------------------------------------------------------
-
-/// SD path of the optional bitmap font file.
-pub const FONT_FILE_PATH: &str = "/FONT.BDF";
-/// Max size (bytes) of the `.bdf` text we are willing to load at boot.
-pub const MAX_FONT_FILE: usize = 8192;
-/// Capacity of the runtime font owned by the boot path.
-pub const FONT_BITMAP_CAP: usize = 4096;
-pub const FONT_SPAN_CAP: usize = 128;
-
-// ---------------------------------------------------------------------------
 // `.qgif` face format
 // ---------------------------------------------------------------------------
 
