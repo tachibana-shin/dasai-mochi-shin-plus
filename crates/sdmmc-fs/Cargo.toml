@@ -19,5 +19,8 @@ repository = "https://github.com/tachibana-shin/sdmmc-fs"
 # embedded-sdmmc is already HAL-generic: VolumeManager<D, T, ...> works over any
 # BlockDevice, and SdCard works over embedded_hal::spi::SpiDevice + DelayNs.
 embedded-sdmmc = "0.9"
-# embedded-sdmmc 0.9 uses heapless 0.8; we must match to share its types.
-heapless = "0.8"
+# heapless is used for our own small fixed-capacity containers (DirEntry.sfn,
+# path building, ...). It does not need to match embedded-sdmmc's heapless:
+# ShortFileName.contents is a plain [u8; 11], so no heapless type crosses the
+# public API boundary between the two crates.
+heapless = "0.9.3"
