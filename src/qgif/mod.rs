@@ -107,7 +107,7 @@ impl QgifHeader {
             data_offset: header_size as u32 + delay_bytes as u32,
         })
     }
-
+/*
     /// Play a whole `.qgif` from an in-memory byte slice for one full cycle,
     /// drawing each frame to the display.
     ///
@@ -145,7 +145,7 @@ impl QgifHeader {
             delay.delay_millis(header.delays[frame] as u32);
         }
     }
-
+*/
     /// Async variant of [`QgifHeader::play_from_memory`] used when the player
     /// must stay responsive to the tap sensor (e.g. the "no SD card" fallback
     /// that loops the embedded intro until the user triple-taps).
