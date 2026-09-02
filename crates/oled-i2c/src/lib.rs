@@ -989,8 +989,14 @@ impl<I: I2c> Oled<I> {
     }
 
     /// Scale `v` by the current rational text scale (rounded down).
+    /// Fast path for integer scales (`den == 1`): multiply only, no division.
     fn scale(&self, v: i16) -> i16 {
-        (v as i32 * self.text_scale_num as i32 / self.text_scale_den as i32) as i16
+        let n = v as i32 * self.text_scale_num as i32;
+        if self.text_scale_den == 1 {
+            n as i16
+        } else {
+            (n / self.text_scale_den as i32) as i16
+        }
     }
 
     /// Scaled horizontal advance (in pixels) of `c` in `font`.
@@ -1018,6 +1024,33 @@ impl<I: I2c> Oled<I> {
         let den = self.text_scale_den as i32;
         let x0 = x + g.x_offset as i16;
         let y0 = y + g.y_offset as i16;
+        // Fast path: plain integer scale (den == 1) uses multiply-only cell
+        // stepping, no per-pixel division.
+        if den == 1 {
+            let size = num as i16;
+            for row in 0..g.height {
+                for col in 0..g.width {
+                    if !font.glyph_bit(g, row, col) {
+                        continue;
+                    }
+                    let px = x0 + col as i16 * size;
+                    if px + size <= clip_l || px >= clip_r {
+                        continue;
+                    }
+                    let py = y0 + row as i16 * size;
+                    for sy in 0..size {
+                        for sx in 0..size {
+                            let ax = px + sx;
+                            if ax >= clip_l && ax < clip_r {
+                                self.set_pixel(ax, py + sy, self.text_color);
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        // Rational scale path (den > 1): map each glyph pixel to a scaled span.
         for row in 0..g.height {
             for col in 0..g.width {
                 if !font.glyph_bit(g, row, col) {
