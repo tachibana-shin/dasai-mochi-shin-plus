@@ -12,7 +12,7 @@ use esp_hal::time::{Instant, Rate};
 use esp_hal::Blocking;
 use esp_println::{print, println};
 use oled_i2c::bdf::BdfFont;
-use oled_i2c::{Font, Oled, OledConfig, FONT_5X7};
+use oled_i2c::{Font, Oled, OledConfig, TextOverflow, FONT_5X7};
 
 use crate::config;
 use crate::drivers::sd::{self, FacesInfo, SdDriver};
@@ -245,38 +245,24 @@ fn try_load_font(sd: &sd::Sd) -> Option<BdfFont<FONT_BITMAP_CAP, FONT_SPAN_CAP>>
     }
 }
 
-/// Duration of the scrolling boot banner, in milliseconds.
-/// Long enough for "Dasai Mochi by Tachibana Shin" to sweep across once.
-const BOOT_BANNER_MS: i64 = 6500;
+/// Duration the boot banner is shown, in milliseconds.
+const BOOT_BANNER_MS: i64 = 3000;
 
-/// Show the scrolling ("marquee") boot banner with the given font (a runtime
-/// `.bdf` font if one was loaded, otherwise the built-in 5x7 font), enlarged
-/// two-fold, then finish startup.
+/// Show the boot banner with the given font (a runtime `.bdf` font if one was
+/// loaded, otherwise the built-in 5x7 font), wrapping long lines instead of
+/// scrolling, then finish startup.
 fn show_boot_banner(display: &mut Display, delay: &Delay, font: &Font<'_>) {
     const MSG: &str = "Dasai Mochi by Tachibana Shin";
-    // Font at scale 1 reads small on the panel; double it for the boot text.
-    display.set_text_size(2);
-    let tw = display.measure_text_with(MSG, font).0 as i16;
-    let w = SCREEN_WIDTH as i16;
-    let x = 0i16;
-    let y = (SCREEN_HEIGHT as i16 - display.line_height() as i16) / 2;
+    // Text wrap instead of marquee: long lines break at the right edge.
+    display.set_text_overflow(TextOverflow::Wrap);
+    display.set_text_size(1);
 
-    // Sweep the whole message in from the right and out through the left,
-    // then loop. Advancing ~2px every ~40ms reads as a smooth marquee.
-    let mut remaining = BOOT_BANNER_MS;
-    let mut offset = -w; // start fully off the right edge
-    while remaining > 0 {
-        display.clear_buffer();
-        display.scroll_text_frame(x, y, MSG, w as u16, offset, font);
-        let _ = display.flush();
-        let step = 40u32.min(remaining as u32);
-        delay.delay_millis(step);
-        remaining -= step as i64;
-        offset += 2;
-        if offset > tw {
-            offset = -w;
-        }
-    }
+    // Center the (potentially 2-line) message vertically.
+    let y = (SCREEN_HEIGHT as i16 - display.line_height() as i16 * 2) / 2;
+    display.draw_str_with(0, y, MSG, font);
+    let _ = display.flush();
+
+    delay.delay_millis(BOOT_BANNER_MS as u32);
     let _ = display.clear_buffer();
     let _ = display.flush();
 }

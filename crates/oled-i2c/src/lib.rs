@@ -1881,4 +1881,23 @@ ENDFONT
         assert!(pixel(d2.fb(), 2, 0)); // 'A' peak visible
         assert!(!pixel(d2.fb(), 14, 0)); // 'C' column fully outside the window
     }
+
+    #[test]
+    fn draw_str_with_wrap_puts_line_two_below() {
+        let mut d = new_display();
+        d.clear();
+        d.set_text_overflow(TextOverflow::Wrap);
+        // 26 chars x 6px = 156px > 128: wraps onto a second row.
+        d.draw_str_with(0, 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", &FONT_5X7);
+        let fb = d.fb();
+        let mut row1_has = false;
+        for y in 8..16 {
+            for x in 0..128 {
+                if pixel(fb, x, y) {
+                    row1_has = true;
+                }
+            }
+        }
+        assert!(row1_has, "wrap should draw a second row of glyphs");
+    }
 }
