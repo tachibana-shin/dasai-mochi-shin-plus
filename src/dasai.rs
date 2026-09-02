@@ -4,187 +4,23 @@
 //! plays the embedded intro, then shuffles and plays the faces found in the
 //! `DasaiMochi/Mochi` folder on the SD card, showing an analog clock between
 //! faces — just like the original C++ firmware.
+//!
+//! This module is the orchestrator: it wires up the display and SD card, then
+//! runs the playback loop. The individual screen routines live in
+//! [`crate::ui`] (boot banner, clock, qgif playback) and the hardware glue in
+//! [`crate::drivers`].
 
 use esp_hal::delay::Delay;
-use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::peripherals::Peripherals;
-use esp_hal::time::{Instant, Rate};
-use esp_hal::Blocking;
 use esp_println::{print, println};
 use oled_i2c::bdf::BdfFont;
-use oled_i2c::{Font, Oled, OledConfig, TextOverflow, FONT_5X7};
 
 use crate::config;
+use crate::drivers::screen;
 use crate::drivers::sd::{self, FacesInfo, SdDriver};
 use crate::intro::INTRO_QGIF;
 use crate::qgif::QgifHeader;
-
-// ---------------------------------------------------------------------------
-// Display helpers
-// ---------------------------------------------------------------------------
-
-/// The concrete display: SH1106 OLED, 128x64, on the board's I2C0 bus.
-type Display = Oled<I2c<'static, Blocking>>;
-
-/// Display physical size (the Dasai Mochi panel is 128x64).
-const SCREEN_WIDTH: usize = 128;
-const SCREEN_HEIGHT: usize = 64;
-/// One frame buffer page-major layout: 128 columns x 64 rows / 8 = 1024 bytes.
-const FRAME_BUF_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT / 8;
-
-/// Draw a 1bpp frame centred on the display, inverting polarity.
-///
-/// The source `.qgif` frame is a **row-major** 1bpp bitmap
-/// (`ceil(width/8) * height` bytes, bit 7 of each byte = leftmost pixel) —
-/// exactly what U8g2's `drawBitmap` consumes in the original C++ firmware.
-/// We rasterise it into the SH1106 **page-major** frame buffer (8 pages ×
-/// 128 column bytes; bit `b` of a column byte = row `page*8 + b`).
-///
-/// Because `mochiNegative = false` in the original config, stored bytes are
-/// inverted relative to the display, so we XOR `0xFF` every source byte first
-/// (same as the C++ `gifRenderFrame`).
-fn draw_centered(display: &mut Display, data: &[u8], width: u16, height: u16) {
-    let mut framebuf = [0u8; FRAME_BUF_SIZE];
-    let row_bytes = (width as usize + 7) / 8;
-
-    // Centre offsets.
-    let x_off = (SCREEN_WIDTH.saturating_sub(width as usize)) / 2;
-    let y_off = (SCREEN_HEIGHT.saturating_sub(height as usize)) / 2;
-
-    for row in 0..height as usize {
-        let dst_row = row + y_off;
-        let page = dst_row / 8;
-        let row_bit = dst_row % 8; // bit index within the OLED page
-        for col in 0..width as usize {
-            let src = data[row * row_bytes + col / 8];
-            let on = ((src ^ 0xFF) >> (7 - (col % 8))) & 1;
-            if on == 1 {
-                framebuf[page * SCREEN_WIDTH + x_off + col] |= 1 << row_bit;
-            }
-        }
-    }
-
-    let _ = display.draw_frame(&framebuf);
-}
-
-/// Play a `.qgif` from a byte slice for one full cycle.
-fn play_from_memory(display: &mut Display, data: &[u8], delay: &Delay) {
-    let mut read_at = |offset: u32, buf: &mut [u8]| -> usize {
-        let start = offset as usize;
-        if start >= data.len() {
-            return 0;
-        }
-        let end = (start + buf.len()).min(data.len());
-        buf[..end - start].copy_from_slice(&data[start..end]);
-        end - start
-    };
-
-    let Some(header) = QgifHeader::parse(&mut read_at) else {
-        println!("bad qgif header");
-        return;
-    };
-
-    for frame in 0..header.frame_count as usize {
-        let fb = header.frame_bytes as usize;
-        let mut buf = [0u8; FRAME_BUF_SIZE];
-        if read_at(
-            header.data_offset + (frame as u32) * (header.frame_bytes as u32),
-            &mut buf[..fb],
-        ) != fb
-        {
-            break;
-        }
-        draw_centered(display, &buf[..fb], header.width, header.height);
-        delay.delay_millis(header.delays[frame] as u32);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Clock placeholder
-// ---------------------------------------------------------------------------
-
-/// Approximate `sin(deg)` as a fixed-point integer scaled by 1024, using the
-/// Bhaskara I rational approximation (error < 0.003 — irrelevant on a 1bpp
-/// 128x64 panel, and avoids pulling in a soft-float trig implementation).
-fn sin_fp(deg: i32) -> i32 {
-    let d = deg.rem_euclid(360);
-    let (neg, x) = if d >= 180 { (true, d - 180) } else { (false, d) };
-    let x_half = 180 - x;
-    let num = 4 * x * x_half;
-    let den = 40500 - x * x_half;
-    let v = 1024 * num / den;
-    if neg {
-        -v
-    } else {
-        v
-    }
-}
-
-/// `cos(deg)` via the same approximation (`cos(d) = sin(d + 90)`).
-fn cos_fp(deg: i32) -> i32 {
-    sin_fp(deg + 90)
-}
-
-/// Clock face geometry for the 128x64 panel.
-const CLOCK_CX: i16 = 64;
-const CLOCK_CY: i16 = 32;
-const CLOCK_R: i16 = 27;
-
-/// Tip of a clock hand `len` pixels long, pointing `angle_deg` degrees
-/// clockwise from 12 o'clock.
-fn hand_tip(len: i16, angle_deg: i32) -> (i16, i16) {
-    let dx = (sin_fp(angle_deg) * len as i32) / 1024;
-    let dy = (-cos_fp(angle_deg) * len as i32) / 1024;
-    (CLOCK_CX + dx as i16, CLOCK_CY + dy as i16)
-}
-
-/// Draw one hand from the hub to its tip.
-fn draw_hand(display: &mut Display, len: i16, angle_deg: i32, on: bool) {
-    let (tx, ty) = hand_tip(len, angle_deg);
-    display.draw_line(CLOCK_CX, CLOCK_CY, tx, ty, on);
-}
-
-/// Draw the rim, the 12 hour ticks and the hub into a blanked buffer.
-fn draw_clock_face(display: &mut Display) {
-    display.clear_buffer();
-    display.draw_circle(CLOCK_CX, CLOCK_CY, CLOCK_R, true);
-    for h in 0..12 {
-        let ang = h * 30;
-        let (x1, y1) = hand_tip(CLOCK_R - 2, ang);
-        let (x2, y2) = hand_tip(CLOCK_R, ang);
-        display.draw_line(x1, y1, x2, y2, true);
-    }
-}
-
-/// Show an analog clock for `ms` milliseconds.
-///
-/// The board has no RTC, so the hands tick with **uptime** (`Instant` counts
-/// since boot). The placeholder now showcases the new shape API
-/// (`draw_circle` / `draw_line`) instead of a blank screen, animating once a
-/// second like a real clock.
-fn show_clock_placeholder(display: &mut Display, delay: &Delay, ms: u32) {
-    display.clear_buffer();
-    let mut remaining = ms as i64;
-    while remaining > 0 {
-        let uptime_ms = Instant::now().duration_since_epoch().as_millis();
-        let secs = (uptime_ms / 1000) % 60;
-        let mins = (uptime_ms / 60_000) % 60;
-        let hours = (uptime_ms / 3_600_000) % 12;
-
-        draw_clock_face(display);
-        // Hour hand advances with both hours and minutes (0.5°/min).
-        draw_hand(display, 12, (hours * 30 + mins as u64 / 2) as i32, true);
-        draw_hand(display, 20, (mins * 6) as i32, true);
-        // Second hand is a little longer and visibly ticks each second.
-        draw_hand(display, 24, (secs * 6) as i32, true);
-        display.fill_circle(CLOCK_CX, CLOCK_CY, 2, true);
-        let _ = display.flush();
-
-        let step = 200u32.min(remaining as u32);
-        delay.delay_millis(step);
-        remaining -= step as i64;
-    }
-}
+use crate::ui::{boot, clock, qgif};
 
 // ---------------------------------------------------------------------------
 // SD card face playback
@@ -245,44 +81,19 @@ fn try_load_font(sd: &sd::Sd) -> Option<BdfFont<FONT_BITMAP_CAP, FONT_SPAN_CAP>>
     }
 }
 
-/// Duration the boot banner is shown, in milliseconds.
-const BOOT_BANNER_MS: i64 = 3000;
-
-/// Show the boot banner with the given font (a runtime `.bdf` font if one was
-/// loaded, otherwise the built-in 5x7 font), wrapping long lines instead of
-/// scrolling, then finish startup.
-fn show_boot_banner(display: &mut Display, delay: &Delay, font: &Font<'_>) {
-    // 1.5x the 5x7 size; split into short lines so word breaks stay clean.
-    const MSG: &str = "Dasai Mochi\nby Tachibana\nShin";
-    // Text wrap instead of marquee: long lines break at the right edge.
-    display.set_text_overflow(TextOverflow::Wrap);
-    display.set_text_scale(3, 2); // 1.5x
-
-    // Clear the last intro frame so the text isn't drawn on top of it.
-    display.clear_buffer();
-    // Center the (3-line) message vertically.
-    let y = (SCREEN_HEIGHT as i16 - display.line_height() as i16 * 3) / 2;
-    display.draw_str_with(0, y, MSG, font);
-    let _ = display.flush();
-
-    delay.delay_millis(BOOT_BANNER_MS as u32);
-    let _ = display.clear_buffer();
-    let _ = display.flush();
-}
-
 /// Play faces from SD card forever (infinite loop).
 ///
 /// Initialises the SD card once, then plays faces in an infinite loop.
 /// The `Sd` driver uses interior mutability (`&self` methods), so it can
 /// coexist with `&mut Display` without fighting the borrow checker.
-fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) -> ! {
+fn play_faces_from_sd(display: &mut screen::Display, delay: &Delay, driver: SdDriver) -> ! {
     // Initialise the SD card once.
     let sd = match sd::new(driver) {
         Some(s) => s,
         None => {
             println!("SD: init failed; looping intro");
             loop {
-                play_from_memory(display, INTRO_QGIF, delay);
+                qgif::play_from_memory(display, INTRO_QGIF, delay);
                 delay.delay_millis(1000);
             }
         }
@@ -294,13 +105,13 @@ fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) ->
         None => {
             println!("SD: no faces; looping intro");
             loop {
-                play_from_memory(display, INTRO_QGIF, delay);
+                qgif::play_from_memory(display, INTRO_QGIF, delay);
                 delay.delay_millis(1000);
             }
         }
     };
 
-    let mut frame_buf = [0u8; FRAME_BUF_SIZE];
+    let mut frame_buf = [0u8; screen::FRAME_BUF_SIZE];
     let mut face_idx = 0usize;
 
     // If a custom `.bdf` font is present, show the banner again so the boot
@@ -312,7 +123,7 @@ fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) ->
             font.first(),
             font.last()
         );
-        show_boot_banner(display, delay, &font.font());
+        boot::show_boot_banner(display, delay, &font.font());
     }
 
     // Infinite playback loop. Each face opens its file by absolute path; the
@@ -360,7 +171,12 @@ fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) ->
             }
             match file.read(&mut frame_buf[..fb]) {
                 Ok(n) if n == fb => {
-                    draw_centered(display, &frame_buf[..fb], header.width, header.height);
+                    screen::draw_frame_centered(
+                        display,
+                        &frame_buf[..fb],
+                        header.width,
+                        header.height,
+                    );
                 }
                 _ => break,
             }
@@ -368,8 +184,8 @@ fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) ->
         }
 
         file.close();
-        // Brief clock placeholder between faces.
-        show_clock_placeholder(display, delay, config::MOCHI_CLOCK_DURATION as u32);
+        // Brief clock between faces.
+        clock::show_clock(display, delay, config::MOCHI_CLOCK_DURATION as u32);
 
         face_idx = (face_idx + 1) % info.faces.len();
     }
@@ -384,30 +200,17 @@ pub fn enter_loop(p: Peripherals) -> ! {
     let delay = Delay::new();
 
     // ---- SH1106 OLED over I2C (SDA=20, SCL=21) ----
-    let i2c = I2c::new(
-        p.I2C0,
-        I2cConfig::default().with_frequency(Rate::from_khz(400)),
-    )
-    .expect("I2C init failed")
-    .with_sda(p.GPIO20)
-    .with_scl(p.GPIO21);
-
-    let mut display = Oled::new(
-        i2c,
-        config::SH1106_I2C_ADDR,
-        OledConfig::sh1106_128x64().with_contrast(150),
-    )
-    .expect("OLED init failed");
+    let mut display = screen::init(p.I2C0, p.GPIO20, p.GPIO21);
 
     // ---- Boot intro from firmware memory ----
     println!("Dasai Mochi Shin — Rust edition");
-    play_from_memory(&mut display, INTRO_QGIF, &delay);
+    qgif::play_from_memory(&mut display, INTRO_QGIF, &delay);
 
-    // ---- Scrolling boot banner (always shows, independent of the SD card) ----
+    // ---- Boot banner (always shows, independent of the SD card) ----
     println!("boot banner");
-    show_boot_banner(&mut display, &delay, &FONT_5X7);
+    boot::show_boot_banner(&mut display, &delay, &oled_i2c::FONT_5X7);
 
-    // ---- SD card face playback (re-init SD card each cycle) ----
+    // ---- SD card face playback ----
     println!("initialising SD card...");
     let driver = sd::sd_gpios(p.SPI2, p.GPIO1, p.GPIO2, p.GPIO3, p.GPIO4);
     play_faces_from_sd(&mut display, &delay, driver)
