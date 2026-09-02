@@ -18,8 +18,6 @@
 //! Brightness edits are applied live ([`screen::set_brightness`]); the saved
 //! value is persisted by [`crate::storage`] when the user double-taps.
 
-use core::fmt::Write as _;
-
 use oled_i2c::FONT_5X7;
 
 use crate::config;
@@ -69,6 +67,11 @@ pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brigh
 /// label with a small gap (no oversized horizontal padding).
 fn draw_list(display: &mut screen::Display, brightness: &u8, sel: usize) {
     display.clear_buffer();
+
+    // Force native 1x scale + the 5x7 font so rows stay compact and labels can
+    // never render oversized (text scale persists on the shared Display).
+    display.set_text_size(1);
+    display.set_font(&FONT_5X7);
 
     // A FONT_5X7 glyph cell is 8px tall; give each row a little breathing room.
     let row_h = 12i16;
@@ -145,29 +148,31 @@ fn bump(v: u8) -> u8 {
     }
 }
 
-/// Render the brightness edit screen (big value + bar).
+/// Render the brightness edit screen (small title + a progress bar as the
+/// only level indicator — no numeric readout). Text scale is forced to 1 here
+/// so the label stays compact regardless of any other screen's settings.
 fn draw_brightness_edit(display: &mut screen::Display, v: u8) {
     display.clear_buffer();
+    // Force native 1x scale + the 5x7 font so the label can never render
+    // oversized (the shared Display object may have been scaled by an earlier
+    // screen). This is what keeps "Brightness" small and clear of the bar.
+    display.set_text_size(1);
+    display.set_font(&FONT_5X7);
     display.set_text_color(true);
+
+    // Small label at the top; a FONT_5X7 cell is 8px tall (ends ~y=10).
     display.draw_str_with(4, 2, "Brightness", &FONT_5X7);
 
-    // Large numeric value, horizontally centred. A 5x7 glyph at 2x scale is
-    // 12px wide (advance 6 * 2), so the centring accounts for the scaled width.
-    let mut s = heapless::String::<4>::new();
-    let _ = write!(&mut s, "{}", v);
-    // display.set_text_size(2);
-    let big_w = (s.len() as i16) * 12;
-    let x = ((config::SCREEN_WIDTH as i16 - big_w) / 2).max(0);
-    display.draw_str_with(x, 16, s.as_str(), &FONT_5X7);
-    // display.set_text_size(1);
-
-    // Value bar.
+    // Progress bar: the only level indicator. Stacked right below the label
+    // with a small gap so the two never touch.
     let bar_w = 100u16;
+    let bar_h = 6u16;
     let bar_x = (config::SCREEN_WIDTH as i16 - bar_w as i16) / 2;
+    let bar_y = 16i16;
     let fill = ((v as u32) * (bar_w as u32) / 255) as u16;
-    display.draw_rect(bar_x, 42, bar_w, 6, true);
+    display.draw_rect(bar_x, bar_y, bar_w, bar_h, true);
     if fill > 0 {
-        display.fill_rect(bar_x + 1, 43, fill.saturating_sub(2).max(0), 4, true);
+        display.fill_rect(bar_x + 1, bar_y + 1, fill.saturating_sub(2).max(0), bar_h - 2, true);
     }
 
     display.draw_str_with(4, 56, "2x save  3x cancel", &FONT_5X7);
