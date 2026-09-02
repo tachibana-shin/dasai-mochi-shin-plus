@@ -21,7 +21,6 @@
 //! This module also hosts the compile-time-embedded boot-intro animation bytes
 //! ([`assets`]).
 
-use esp_hal::delay::Delay;
 use esp_println::println;
 
 use crate::config;
@@ -146,7 +145,7 @@ impl QgifHeader {
         }
     }
 */
-    /// Async variant of [`QgifHeader::play_from_memory`] used when the player
+    /// Async variant of [`QgifHeader::parse`] playback used when the player
     /// must stay responsive to the tap sensor (e.g. the "no SD card" fallback
     /// that loops the embedded intro until the user triple-taps).
     ///
