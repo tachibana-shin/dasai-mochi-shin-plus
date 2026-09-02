@@ -1,5 +1,9 @@
 # oled-i2c
 
+[![Crates.io](https://img.shields.io/crates/v/oled-i2c)](https://crates.io/crates/oled-i2c)
+[![docs.rs](https://img.shields.io/docsrs/oled-i2c)](https://docs.rs/oled-i2c)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 Minimal `no_std` I2C OLED driver for the **SSD1306** and **SH1106** controller
 families (0.96" / 1.3" 1bpp OLED modules).
 
@@ -9,8 +13,22 @@ families (0.96" / 1.3" 1bpp OLED modules).
   trivially fed by any 1bpp bitmap renderer (`.qgif` player, U8g2-style
   bitmaps, glyph fonts, ...).
 * Handles the SH1106 132-column RAM window (column offset 2) automatically.
+* Optional [`embedded-graphics`] `DrawTarget` implementation for drawing e-g
+  primitives and fonts directly on the framebuffer.
+* **no_std** (no allocator required), works in bare-metal / `#[no_main]`
+  embedded programs.
+
+MSRV: Rust **1.81**.
 
 ## Usage
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+oled-i2c = "0.2"
+embedded-hal = "1.0"   # provides the I2C trait (or your chip HAL re-exports it)
+```
 
 ```rust,ignore
 use oled_i2c::{Oled, OledConfig, FONT_5X7};
@@ -35,6 +53,36 @@ display.set_text_color(false); // draw dark-on-bright text
 display.draw_str(0, 32, "2x text");
 display.flush().ok();
 ```
+
+### Draw with `embedded-graphics`
+
+Enable the `embedded-graphics` feature to draw e-g primitives and fonts
+directly on the internal framebuffer:
+
+```toml
+[dependencies]
+oled-i2c = { version = "0.2", features = ["embedded-graphics"] }
+embedded-graphics = "0.8"
+```
+
+```rust,ignore
+use embedded_graphics::{
+    pixelcolor::BinaryColor,
+    prelude::*,
+    primitives::{Circle, PrimitiveStyle},
+    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    text::Text,
+};
+
+// Oled<impl I2c> implements DrawTarget<Color = BinaryColor>.
+Circle::new(Point::new(20, 10), 20)
+    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+    .draw(&mut display)?;
+Text::new("hi", Point::new(8, 40), MonoTextStyle::new(&FONT_6X10, BinaryColor::On))
+    .draw(&mut display)?;
+display.flush()?; // push the framebuffer to the panel
+```
+
 
 ## Text & fonts
 

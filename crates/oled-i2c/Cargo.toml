@@ -2,9 +2,12 @@
 name = "oled-i2c"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.81"
 description = "Minimal no_std I2C OLED driver for SSD1306 / SH1106 controllers"
 license = "MIT OR Apache-2.0"
-keywords = ["oled", "ssd1306", "sh1106", "i2c", "embedded"]
+readme = "README.md"
+repository = "https://github.com/tachibana-shin/oled-i2c"
+keywords = ["oled", "ssd1306", "sh1106", "i2c", "embedded", "no-std"]
 categories = ["embedded", "hardware-support", "no-std"]
 
 [dependencies]
