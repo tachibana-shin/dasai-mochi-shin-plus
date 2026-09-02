@@ -56,6 +56,9 @@ use embedded_hal::i2c::I2c;
 
 pub mod fonts;
 
+#[cfg(feature = "embedded-graphics")]
+pub mod embedded_graphics;
+
 pub use fonts::{Font, Glyph, FONT_5X7};
 
 /// I2C control byte indicating that the following payload is **commands**.
@@ -1410,5 +1413,82 @@ mod tests {
         let fb = d.fb();
         assert!(pixel(fb, 7, 0)); // bit7
         assert!(!pixel(fb, 0, 0));
+    }
+
+    #[cfg(feature = "embedded-graphics")]
+    #[test]
+    fn eg_draw_target_renders_rect_and_text() {
+        use ::embedded_graphics::{
+            mono_font::{ascii::FONT_6X10, MonoTextStyle},
+            pixelcolor::BinaryColor,
+            prelude::*,
+            primitives::{PrimitiveStyle, Rectangle as EgRect},
+            text::{Baseline, Text},
+        };
+
+        let mut d = new_display();
+        d.clear();
+        // Filled rectangle -> routed through our `fill_solid`.
+        EgRect::new(Point::new(8, 8), Size::new(10, 10))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(&mut d)
+            .ok();
+        let fb = d.fb();
+        assert!(pixel(fb, 12, 12));
+        assert!(pixel(fb, 17, 17));
+        assert!(!pixel(fb, 7, 7));
+        assert!(!pixel(fb, 18, 18));
+
+        // Stroke-only rectangle keeps a hollow interior.
+        d.clear();
+        EgRect::new(Point::new(2, 2), Size::new(10, 10))
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(&mut d)
+            .ok();
+        let fb = d.fb();
+        assert!(pixel(fb, 2, 2));
+        assert!(pixel(fb, 11, 11));
+        assert!(!pixel(fb, 6, 6));
+
+        // Text with embedded-graphics' own font.
+        d.clear();
+        Text::with_baseline(
+            "H",
+            Point::new(0, 0),
+            MonoTextStyle::new(&FONT_6X10, BinaryColor::On),
+            Baseline::Top,
+        )
+        .draw(&mut d)
+        .ok();
+        let fb = d.fb();
+        // FONT_6X10 'H': left leg (col 0) and horizontal bar "#####" at
+        // glyph row 4 (cols 0..=4); 6th column stays empty.
+        assert!(pixel(fb, 0, 4));
+        assert!(pixel(fb, 3, 4));
+        assert!(!pixel(fb, 5, 4));
+        assert!(!pixel(fb, 0, 0)); // glyph top row is blank
+    }
+
+    #[cfg(feature = "embedded-graphics")]
+    #[test]
+    fn eg_clear_and_points_iter() {
+        use ::embedded_graphics::{
+            image::ImageRawBE,
+            pixelcolor::BinaryColor,
+            prelude::*,
+        };
+        let mut d = new_display();
+        d.fill_screen(true); // fill the physical buffer directly
+        DrawTarget::clear(&mut d, BinaryColor::Off).ok();
+        assert!(d.fb().iter().all(|b| *b == 0x00));
+
+        // draw_iter path used by arbitrary pixel iterators / images.
+        // ImageRawBE::new(data, width): 2-wide, MSB-first, rows from bytes.
+        let raw: ImageRawBE<BinaryColor> = ImageRawBE::new(&[0b1100_0000u8, 0b0000_0000], 2);
+        raw.draw(&mut d).ok();
+        let fb = d.fb();
+        assert!(pixel(fb, 0, 0));
+        assert!(pixel(fb, 1, 0));
+        assert!(!pixel(fb, 2, 0));
     }
 }

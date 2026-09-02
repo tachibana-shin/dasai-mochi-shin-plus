@@ -9,6 +9,13 @@ categories = ["embedded", "hardware-support", "no-std"]
 
 [dependencies]
 embedded-hal = "1.0"
+embedded-graphics = { version = "0.8", optional = true }
+
+[features]
+default = []
+# Implement `embedded_graphics::DrawTarget` for `Oled` (draw e-g primitives
+# and fonts directly on the framebuffer).
+embedded-graphics = ["dep:embedded-graphics"]
 
 [lib]
 # Always no_std: the driver only talks raw 1bpp page-major frame buffers.
