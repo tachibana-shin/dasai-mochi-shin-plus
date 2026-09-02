@@ -1,0 +1,23 @@
+[package]
+name = "sdmmc-fs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.76"
+description = "HAL-agnostic high-level FAT filesystem convenience layer on top of embedded-sdmmc"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+categories = ["embedded", "no-std", "filesystem"]
+keywords = ["fat", "sd", "mmc", "filesystem", "embedded"]
+repository = "https://github.com/tachibana-shin/sdmmc-fs"
+
+# This crate is a standalone workspace (independent Cargo.lock), mirroring how
+# oled-i2c is kept separate from the parent firmware workspace. It is pulled
+# into the firmware via a path dependency.
+[workspace]
+
+[dependencies]
+# embedded-sdmmc is already HAL-generic: VolumeManager<D, T, ...> works over any
+# BlockDevice, and SdCard works over embedded_hal::spi::SpiDevice + DelayNs.
+embedded-sdmmc = "0.9"
+# embedded-sdmmc 0.9 uses heapless 0.8; we must match to share its types.
+heapless = "0.8"
