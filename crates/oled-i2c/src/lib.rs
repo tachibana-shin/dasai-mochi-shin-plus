@@ -26,7 +26,10 @@
 //! PlatformIO libraries: `set_cursor` / `set_text_size` / `set_font` / `print`
 //! (Adafruit GFX style) and `draw_str` (U8g2 `drawStr` style). Text is
 //! rasterised into an internal frame buffer which you push with [`Oled::flush`]
-//! — exactly like `display()` / `sendBuffer()` in those libraries.
+//! — exactly like `display()` / `sendBuffer()` in those libraries. GFX-style
+//! shape primitives are also included: lines, rectangles, circles, ellipses,
+//! rounded rects, triangles and 1bpp bitmaps — ported from the Adafruit GFX
+//! algorithms.
 //!
 //! # Example
 //!
@@ -309,6 +312,479 @@ impl<I: I2c> Oled<I> {
             self.fb[idx] |= mask;
         } else {
             self.fb[idx] &= !mask;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Shapes (mimics Adafruit GFX primitives)
+    // ------------------------------------------------------------------
+
+    /// Draw a horizontal line from `(x, y)` with length `w` (GFX
+    /// `drawFastHLine`).
+    pub fn draw_hline(&mut self, x: i16, y: i16, w: u16, on: bool) {
+        let y = y.max(0);
+        if y >= self.config.height as i16 {
+            return;
+        }
+        let x_start = x.max(0);
+        let x_end = (x + w as i16).min(self.config.width as i16);
+        for px in x_start..x_end {
+            self.set_pixel(px, y, on);
+        }
+    }
+
+    /// Draw a vertical line from `(x, y)` with length `h` (GFX
+    /// `drawFastVLine`).
+    pub fn draw_vline(&mut self, x: i16, y: i16, h: u16, on: bool) {
+        let x = x.max(0);
+        if x >= self.config.width as i16 {
+            return;
+        }
+        let y_start = y.max(0);
+        let y_end = (y + h as i16).min(self.config.height as i16);
+        for py in y_start..y_end {
+            self.set_pixel(x, py, on);
+        }
+    }
+
+    /// Draw a filled rectangle (GFX `fillRect`). `(x, y)` is the top-left
+    /// corner, `w`/`h` are the dimensions.
+    pub fn fill_rect(&mut self, x: i16, y: i16, w: u16, h: u16, on: bool) {
+        for dy in 0..h as i16 {
+            self.draw_hline(x, y + dy, w, on);
+        }
+    }
+
+    /// Draw a 1-px outline rectangle (GFX `drawRect`).
+    pub fn draw_rect(&mut self, x: i16, y: i16, w: u16, h: u16, on: bool) {
+        self.draw_hline(x, y, w, on);
+        if h > 0 {
+            self.draw_hline(x, y + h as i16 - 1, w, on);
+        }
+        if h > 2 {
+            self.draw_vline(x, y + 1, h - 2, on);
+            self.draw_vline(x + w as i16 - 1, y + 1, h - 2, on);
+        }
+    }
+
+    /// Draw a line between two points using Bresenham's algorithm (GFX
+    /// `drawLine`).
+    pub fn draw_line(&mut self, x0: i16, y0: i16, x1: i16, y1: i16, on: bool) {
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        let (mut x, mut y) = (x0, y0);
+        loop {
+            self.set_pixel(x, y, on);
+            if x == x1 && y == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
+    /// Fill the entire screen with one pixel value (GFX `fillScreen`).
+    pub fn fill_screen(&mut self, on: bool) {
+        let n = self.config.frame_buf_size();
+        self.fb[..n].fill(if on { 0xFF } else { 0x00 });
+    }
+
+    /// Midpoint-circle loop shared by the circle/roundrect helpers. Draws
+    /// only the octants selected by `corners` (GFX `drawCircleHelper` mask:
+    /// bit 0x1 = top-left, 0x2 = top-right, 0x4 = bottom-right, 0x8 =
+    /// bottom-left).
+    fn draw_circle_helper(&mut self, x0: i16, y0: i16, r: i16, corners: u8, on: bool) {
+        let mut f = 1 - r;
+        let mut dd_f_x = 1i16;
+        let mut dd_f_y = -2 * r;
+        let mut x = 0i16;
+        let mut y = r;
+
+        while x < y {
+            if f >= 0 {
+                y -= 1;
+                dd_f_y += 2;
+                f += dd_f_y;
+            }
+            x += 1;
+            dd_f_x += 2;
+            f += dd_f_x;
+
+            if corners & 0x04 != 0 {
+                self.set_pixel(x0 + x, y0 + y, on);
+                self.set_pixel(x0 + y, y0 + x, on);
+            }
+            if corners & 0x02 != 0 {
+                self.set_pixel(x0 + x, y0 - y, on);
+                self.set_pixel(x0 + y, y0 - x, on);
+            }
+            if corners & 0x08 != 0 {
+                self.set_pixel(x0 - y, y0 + x, on);
+                self.set_pixel(x0 - x, y0 + y, on);
+            }
+            if corners & 0x01 != 0 {
+                self.set_pixel(x0 - y, y0 - x, on);
+                self.set_pixel(x0 - x, y0 - y, on);
+            }
+        }
+    }
+
+    /// Vertical-line fill helper used by `fill_circle`/`fill_round_rect`
+    /// (GFX `fillCircleHelper`). `corners` bit 0x1 = right, 0x2 = left;
+    /// `delta` extends the lines beyond the corner band (0 for circles).
+    fn fill_circle_helper(
+        &mut self,
+        x0: i16,
+        y0: i16,
+        r: i16,
+        corners: u8,
+        delta: i16,
+        on: bool,
+    ) {
+        let mut f = 1 - r;
+        let mut dd_f_x = 1i16;
+        let mut dd_f_y = -2 * r;
+        let mut x = 0i16;
+        let mut y = r;
+        let mut px = x;
+        let mut py = y;
+        let delta = delta + 1; // avoid some +1's in the loop
+
+        while x < y {
+            if f >= 0 {
+                y -= 1;
+                dd_f_y += 2;
+                f += dd_f_y;
+            }
+            x += 1;
+            dd_f_x += 2;
+            f += dd_f_x;
+
+            // These checks avoid double-drawing certain lines (important for
+            // INVERT drawing modes on real Adafruit SSD1306).
+            if x < y + 1 {
+                if corners & 0x01 != 0 {
+                    self.draw_vline(x0 + x, y0 - y, (2 * y + delta) as u16, on);
+                }
+                if corners & 0x02 != 0 {
+                    self.draw_vline(x0 - x, y0 - y, (2 * y + delta) as u16, on);
+                }
+            }
+            if y != py {
+                if corners & 0x01 != 0 {
+                    self.draw_vline(x0 + py, y0 - px, (2 * px + delta) as u16, on);
+                }
+                if corners & 0x02 != 0 {
+                    self.draw_vline(x0 - py, y0 - px, (2 * px + delta) as u16, on);
+                }
+                py = y;
+            }
+            px = x;
+        }
+    }
+
+    /// Draw a circle outline centred on `(x0, y0)` (GFX `drawCircle`).
+    pub fn draw_circle(&mut self, x0: i16, y0: i16, r: i16, on: bool) {
+        let mut f = 1 - r;
+        let mut dd_f_x = 1i16;
+        let mut dd_f_y = -2 * r;
+        let mut x = 0i16;
+        let mut y = r;
+
+        self.set_pixel(x0, y0 + r, on);
+        self.set_pixel(x0, y0 - r, on);
+        self.set_pixel(x0 + r, y0, on);
+        self.set_pixel(x0 - r, y0, on);
+
+        while x < y {
+            if f >= 0 {
+                y -= 1;
+                dd_f_y += 2;
+                f += dd_f_y;
+            }
+            x += 1;
+            dd_f_x += 2;
+            f += dd_f_x;
+
+            self.set_pixel(x0 + x, y0 + y, on);
+            self.set_pixel(x0 - x, y0 + y, on);
+            self.set_pixel(x0 + x, y0 - y, on);
+            self.set_pixel(x0 - x, y0 - y, on);
+            self.set_pixel(x0 + y, y0 + x, on);
+            self.set_pixel(x0 - y, y0 + x, on);
+            self.set_pixel(x0 + y, y0 - x, on);
+            self.set_pixel(x0 - y, y0 - x, on);
+        }
+    }
+
+    /// Draw a filled circle (disc) centred on `(x0, y0)` (GFX `fillCircle`).
+    pub fn fill_circle(&mut self, x0: i16, y0: i16, r: i16, on: bool) {
+        self.draw_vline(x0, y0 - r, (2 * r + 1) as u16, on);
+        self.fill_circle_helper(x0, y0, r, 0x03, 0, on);
+    }
+
+    /// Draw an ellipse outline centred on `(x0, y0)` with radii `rw`/`rh`
+    /// (GFX `drawEllipse`, Bresenham).
+    pub fn draw_ellipse(&mut self, x0: i16, y0: i16, rw: i16, rh: i16, on: bool) {
+        let mut x = 0i16;
+        let mut y = rh;
+        let rw2 = rw as i32 * rw as i32;
+        let rh2 = rh as i32 * rh as i32;
+        let two_rw2 = 2 * rw2;
+        let two_rh2 = 2 * rh2;
+
+        let mut decision = rh2 - (rw2 * rh as i32) + (rw2 / 4);
+
+        // region 1
+        while (two_rh2 * x as i32) < (two_rw2 * y as i32) {
+            self.set_pixel(x0 + x, y0 + y, on);
+            self.set_pixel(x0 - x, y0 + y, on);
+            self.set_pixel(x0 + x, y0 - y, on);
+            self.set_pixel(x0 - x, y0 - y, on);
+            x += 1;
+            if decision < 0 {
+                decision += rh2 + two_rh2 * x as i32;
+            } else {
+                decision += rh2 + two_rh2 * x as i32 - two_rw2 * y as i32;
+                y -= 1;
+            }
+        }
+
+        // region 2
+        decision = ((rh2 * (2 * x as i32 + 1) * (2 * x as i32 + 1)) >> 2)
+            + (rw2 * (y as i32 - 1) * (y as i32 - 1))
+            - (rw2 * rh2);
+        while y >= 0 {
+            self.set_pixel(x0 + x, y0 + y, on);
+            self.set_pixel(x0 - x, y0 + y, on);
+            self.set_pixel(x0 + x, y0 - y, on);
+            self.set_pixel(x0 - x, y0 - y, on);
+            y -= 1;
+            if decision > 0 {
+                decision += rw2 - two_rw2 * y as i32;
+            } else {
+                decision += rw2 + two_rh2 * x as i32 - two_rw2 * y as i32;
+                x += 1;
+            }
+        }
+    }
+
+    /// Draw a filled ellipse (GFX `fillEllipse`).
+    pub fn fill_ellipse(&mut self, x0: i16, y0: i16, rw: i16, rh: i16, on: bool) {
+        let mut x = 0i16;
+        let mut y = rh;
+        let rw2 = rw as i32 * rw as i32;
+        let rh2 = rh as i32 * rh as i32;
+        let two_rw2 = 2 * rw2;
+        let two_rh2 = 2 * rh2;
+
+        let mut decision = rh2 - (rw2 * rh as i32) + (rw2 / 4);
+
+        // region 1
+        while (two_rh2 * x as i32) < (two_rw2 * y as i32) {
+            x += 1;
+            if decision < 0 {
+                decision += rh2 + two_rh2 * x as i32;
+            } else {
+                decision += rh2 + two_rh2 * x as i32 - two_rw2 * y as i32;
+                let w = (2 * (x - 1) + 1) as u16;
+                self.draw_hline(x0 - (x - 1), y0 + y, w, on);
+                self.draw_hline(x0 - (x - 1), y0 - y, w, on);
+                y -= 1;
+            }
+        }
+
+        // region 2
+        decision = ((rh2 * (2 * x as i32 + 1) * (2 * x as i32 + 1)) >> 2)
+            + (rw2 * (y as i32 - 1) * (y as i32 - 1))
+            - (rw2 * rh2);
+        while y >= 0 {
+            let w = (2 * x + 1) as u16;
+            self.draw_hline(x0 - x, y0 + y, w, on);
+            self.draw_hline(x0 - x, y0 - y, w, on);
+            y -= 1;
+            if decision > 0 {
+                decision += rw2 - two_rw2 * y as i32;
+            } else {
+                decision += rw2 + two_rh2 * x as i32 - two_rw2 * y as i32;
+                x += 1;
+            }
+        }
+    }
+
+    /// Draw a 1-px outline rounded rectangle (GFX `drawRoundRect`).
+    pub fn draw_round_rect(&mut self, x: i16, y: i16, w: u16, h: u16, r: i16, on: bool) {
+        let max_radius = (w as i16).min(h as i16) / 2;
+        let r = r.max(0).min(max_radius);
+        self.draw_hline(x + r, y, w - 2 * r as u16, on);
+        self.draw_hline(x + r, y + h as i16 - 1, w - 2 * r as u16, on);
+        self.draw_vline(x, y + r, h - 2 * r as u16, on);
+        self.draw_vline(x + w as i16 - 1, y + r, h - 2 * r as u16, on);
+        self.draw_circle_helper(x + r, y + r, r, 0x01, on);
+        self.draw_circle_helper(x + w as i16 - r - 1, y + r, r, 0x02, on);
+        self.draw_circle_helper(x + w as i16 - r - 1, y + h as i16 - r - 1, r, 0x04, on);
+        self.draw_circle_helper(x + r, y + h as i16 - r - 1, r, 0x08, on);
+    }
+
+    /// Draw a filled rounded rectangle (GFX `fillRoundRect`).
+    pub fn fill_round_rect(&mut self, x: i16, y: i16, w: u16, h: u16, r: i16, on: bool) {
+        let max_radius = (w as i16).min(h as i16) / 2;
+        let r = r.max(0).min(max_radius);
+        self.fill_rect(x + r, y, w - 2 * r as u16, h, on);
+        let delta = h as i16 - 2 * r - 1;
+        self.fill_circle_helper(x + w as i16 - r - 1, y + r, r, 0x01, delta, on);
+        self.fill_circle_helper(x + r, y + r, r, 0x02, delta, on);
+    }
+
+    /// Draw a triangle outline between three vertices (GFX `drawTriangle`).
+    pub fn draw_triangle(
+        &mut self,
+        x0: i16,
+        y0: i16,
+        x1: i16,
+        y1: i16,
+        x2: i16,
+        y2: i16,
+        on: bool,
+    ) {
+        self.draw_line(x0, y0, x1, y1, on);
+        self.draw_line(x1, y1, x2, y2, on);
+        self.draw_line(x2, y2, x0, y0, on);
+    }
+
+    /// Draw a filled triangle between three vertices using the GFX scanline
+    /// algorithm (GFX `fillTriangle`).
+    pub fn fill_triangle(
+        &mut self,
+        mut x0: i16,
+        mut y0: i16,
+        mut x1: i16,
+        mut y1: i16,
+        mut x2: i16,
+        mut y2: i16,
+        on: bool,
+    ) {
+        // Sort coordinates by Y order (y2 >= y1 >= y0).
+        if y0 > y1 {
+            core::mem::swap(&mut y0, &mut y1);
+            core::mem::swap(&mut x0, &mut x1);
+        }
+        if y1 > y2 {
+            core::mem::swap(&mut y1, &mut y2);
+            core::mem::swap(&mut x1, &mut x2);
+        }
+        if y0 > y1 {
+            core::mem::swap(&mut y0, &mut y1);
+            core::mem::swap(&mut x0, &mut x1);
+        }
+
+        // Handle awkward all-on-same-line case.
+        if y0 == y2 {
+            let mut a = x0;
+            let mut b = x0;
+            if x1 < a {
+                a = x1;
+            } else if x1 > b {
+                b = x1;
+            }
+            if x2 < a {
+                a = x2;
+            } else if x2 > b {
+                b = x2;
+            }
+            self.draw_hline(a, y0, (b - a + 1) as u16, on);
+            return;
+        }
+
+        let dx01 = x1 - x0;
+        let dy01 = y1 - y0;
+        let dx02 = x2 - x0;
+        let dy02 = y2 - y0;
+        let dx12 = x2 - x1;
+        let dy12 = y2 - y1;
+        let mut sa: i32 = 0;
+        let mut sb: i32 = 0;
+
+        // Upper part: scanline crossings on edges 0-1 and 0-2. If y1==y2
+        // (flat bottom), the y1 scanline is included here; otherwise it is
+        // skipped here and handled in the lower loop (avoids /0 there and
+        // inverts roles for flat-topped triangles).
+        let last = if y1 == y2 { y1 } else { y1 - 1 };
+        let mut y = y0;
+        while y <= last {
+            let mut a = x0 + (sa / dy01 as i32) as i16;
+            let mut b = x0 + (sb / dy02 as i32) as i16;
+            sa += dx01 as i32;
+            sb += dx02 as i32;
+            if a > b {
+                core::mem::swap(&mut a, &mut b);
+            }
+            self.draw_hline(a, y, (b - a + 1) as u16, on);
+            y += 1;
+        }
+
+        // Lower part: scanline crossings on edges 0-2 and 1-2.
+        sa = dx12 as i32 * (y - y1) as i32;
+        sb = dx02 as i32 * (y - y0) as i32;
+        while y <= y2 {
+            let mut a = x1 + (sa / dy12 as i32) as i16;
+            let mut b = x0 + (sb / dy02 as i32) as i16;
+            sa += dx12 as i32;
+            sb += dx02 as i32;
+            if a > b {
+                core::mem::swap(&mut a, &mut b);
+            }
+            self.draw_hline(a, y, (b - a + 1) as u16, on);
+            y += 1;
+        }
+    }
+
+    /// Draw a 1bpp bitmap at `(x, y)` (GFX `drawBitmap`): row-major, MSB of
+    /// each byte = leftmost pixel, each row padded to a whole byte. Unset
+    /// bits are transparent.
+    pub fn draw_bitmap(&mut self, x: i16, y: i16, bitmap: &[u8], w: u16, h: u16, on: bool) {
+        let byte_width = (w as usize + 7) / 8;
+        let mut b = 0u8;
+        for j in 0..h as i16 {
+            for i in 0..w as i16 {
+                if i & 7 != 0 {
+                    b <<= 1;
+                } else {
+                    b = bitmap[j as usize * byte_width + (i / 8) as usize];
+                }
+                if b & 0x80 != 0 {
+                    self.set_pixel(x + i, y + j, on);
+                }
+            }
+        }
+    }
+
+    /// Draw a 1bpp X11 `.xbm`-style bitmap (GFX `drawXBitmap`): row-major
+    /// with LSB of each byte = leftmost pixel. Unset bits are transparent.
+    pub fn draw_xbitmap(&mut self, x: i16, y: i16, bitmap: &[u8], w: u16, h: u16, on: bool) {
+        let byte_width = (w as usize + 7) / 8;
+        let mut b = 0u8;
+        for j in 0..h as i16 {
+            for i in 0..w as i16 {
+                if i & 7 != 0 {
+                    b >>= 1;
+                } else {
+                    b = bitmap[j as usize * byte_width + (i / 8) as usize];
+                }
+                if b & 0x01 != 0 {
+                    self.set_pixel(x + i, y + j, on);
+                }
+            }
         }
     }
 
@@ -616,5 +1092,215 @@ mod tests {
         // 'v' glyph rows: rows 0-1 blank, its first ink is at col0,row2.
         assert!(!pixel(fb, 0, 0));
         assert!(pixel(fb, 0, 2));
+    }
+
+    #[test]
+    fn draw_rect_and_fill_rect() {
+        let mut d = new_display();
+        d.clear();
+        d.draw_rect(5, 5, 10, 10, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 5, 5));
+        assert!(pixel(fb, 14, 5));
+        assert!(pixel(fb, 5, 14));
+        assert!(pixel(fb, 14, 14));
+        assert!(!pixel(fb, 7, 7)); // hollow inside
+
+        d.clear();
+        d.fill_rect(5, 5, 10, 10, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 7, 7));
+        assert!(!pixel(fb, 4, 4));
+        assert!(!pixel(fb, 15, 15));
+    }
+
+    #[test]
+    fn draw_line_bresenham() {
+        let mut d = new_display();
+        d.clear();
+        d.draw_line(0, 0, 30, 0, true); // horizontal
+        let fb = d.fb();
+        assert!(pixel(fb, 0, 0));
+        assert!(pixel(fb, 15, 0));
+        assert!(pixel(fb, 30, 0));
+        assert!(!pixel(fb, 0, 1));
+
+        d.clear();
+        d.draw_line(0, 0, 0, 20, true); // vertical
+        let fb = d.fb();
+        assert!(pixel(fb, 0, 10));
+        assert!(!pixel(fb, 1, 10));
+
+        d.clear();
+        d.draw_line(0, 0, 20, 10, true); // diagonal
+        let fb = d.fb();
+        assert!(pixel(fb, 10, 5));
+        assert!(pixel(fb, 20, 10));
+    }
+
+    #[test]
+    fn hline_vline_clip_at_edges() {
+        let mut d = new_display();
+        d.clear();
+        d.draw_hline(-10, 0, 20, true); // starts off-screen left
+        let fb = d.fb();
+        assert!(pixel(fb, 0, 0));
+        assert!(pixel(fb, 9, 0));
+        assert!(!pixel(fb, 10, 0));
+
+        d.clear();
+        d.draw_vline(127, 0, 100, true); // extends below
+        let fb = d.fb();
+        assert!(pixel(fb, 127, 63));
+        assert!(pixel(fb, 127, 0));
+    }
+
+    #[test]
+    fn fill_screen_toggles_all_pixels() {
+        let mut d = new_display();
+        d.fill_screen(true);
+        let fb = d.fb();
+        assert!(pixel(fb, 0, 0));
+        assert!(pixel(fb, 127, 63));
+        assert!(pixel(fb, 64, 32));
+        assert!(fb.iter().all(|b| *b == 0xFF));
+
+        d.fill_screen(false);
+        let fb = d.fb();
+        assert!(!pixel(fb, 0, 0));
+        assert!(!pixel(fb, 127, 63));
+        assert!(fb.iter().all(|b| *b == 0x00));
+    }
+
+    #[test]
+    fn circle_outline_and_fill() {
+        let mut d = new_display();
+        d.clear();
+        d.draw_circle(20, 20, 5, true);
+        let fb = d.fb();
+        // axis endpoints
+        assert!(pixel(fb, 20, 25));
+        assert!(pixel(fb, 20, 15));
+        assert!(pixel(fb, 25, 20));
+        assert!(pixel(fb, 15, 20));
+        // centre and beyond-radius points stay clear
+        assert!(!pixel(fb, 20, 20));
+        assert!(!pixel(fb, 20, 26));
+        assert!(!pixel(fb, 14, 20));
+
+        d.clear();
+        d.fill_circle(20, 20, 5, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 20, 20));
+        assert!(pixel(fb, 16, 20));
+        assert!(pixel(fb, 20, 23));
+        assert!(!pixel(fb, 20, 26));
+        assert!(!pixel(fb, 14, 20));
+    }
+
+    #[test]
+    fn ellipse_outline_and_fill() {
+        let mut d = new_display();
+        d.clear();
+        d.draw_ellipse(30, 20, 6, 4, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 30, 24));
+        assert!(pixel(fb, 30, 16));
+        assert!(pixel(fb, 36, 20));
+        assert!(pixel(fb, 24, 20));
+        assert!(!pixel(fb, 30, 20)); // hollow centre
+        assert!(!pixel(fb, 23, 20));
+        assert!(!pixel(fb, 37, 20));
+
+        d.clear();
+        d.fill_ellipse(30, 20, 6, 4, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 30, 20));
+        assert!(pixel(fb, 25, 22));
+        assert!(pixel(fb, 30, 23));
+        assert!(pixel(fb, 24, 22));
+        assert!(!pixel(fb, 23, 20));
+        assert!(!pixel(fb, 30, 15));
+    }
+
+    #[test]
+    fn round_rect_outline_and_fill() {
+        let mut d = new_display();
+        d.clear();
+        d.draw_round_rect(5, 5, 20, 10, 3, true);
+        let fb = d.fb();
+        // flat edge midpoints
+        assert!(pixel(fb, 8, 5));
+        assert!(pixel(fb, 21, 5));
+        assert!(pixel(fb, 8, 14));
+        assert!(pixel(fb, 5, 8));
+        assert!(pixel(fb, 24, 8));
+        // outer corner pixels are rounded away
+        assert!(!pixel(fb, 5, 5));
+        assert!(!pixel(fb, 24, 5));
+        assert!(!pixel(fb, 5, 14));
+        assert!(!pixel(fb, 24, 14));
+        // hollow interior
+        assert!(!pixel(fb, 13, 8));
+
+        d.clear();
+        d.fill_round_rect(5, 5, 20, 10, 3, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 12, 10)); // centre
+        assert!(pixel(fb, 6, 6)); // just inside the rounded corner
+        assert!(pixel(fb, 24, 7)); // right corner belly
+        assert!(!pixel(fb, 5, 5));
+        assert!(!pixel(fb, 24, 5));
+        assert!(!pixel(fb, 4, 4));
+    }
+
+    #[test]
+    fn triangle_outline_and_fill() {
+        let mut d = new_display();
+        d.clear();
+        d.draw_triangle(10, 10, 50, 10, 30, 40, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 30, 10)); // top edge
+        assert!(pixel(fb, 30, 40)); // bottom vertex
+        assert!(!pixel(fb, 30, 20)); // hollow interior
+
+        d.clear();
+        d.fill_triangle(10, 10, 50, 10, 30, 40, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 30, 20));
+        assert!(pixel(fb, 15, 15));
+        assert!(pixel(fb, 30, 35));
+        assert!(!pixel(fb, 10, 35)); // left of the sloping edge
+        assert!(!pixel(fb, 60, 20)); // right of the sloping edge
+        assert!(!pixel(fb, 30, 5));
+    }
+
+    #[test]
+    fn bitmap_and_xbitmap() {
+        let mut d = new_display();
+        d.clear();
+        // 10 px wide: cols 0-7 = 0xFF, col 8 = 0x80, col 9 left as pad.
+        d.draw_bitmap(0, 0, &[0xFF, 0x80, 0xFF, 0x80], 10, 2, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 0, 0));
+        assert!(pixel(fb, 7, 0));
+        assert!(pixel(fb, 8, 0));
+        assert!(!pixel(fb, 9, 0)); // pad bit
+        assert!(pixel(fb, 0, 1));
+        assert!(!pixel(fb, 0, 2));
+
+        d.clear();
+        // X11 .xbm: LSB of each byte is the leftmost pixel.
+        d.draw_xbitmap(0, 0, &[0x01], 8, 1, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 0, 0)); // bit0
+        assert!(!pixel(fb, 7, 0));
+        assert!(!pixel(fb, 1, 0));
+
+        d.clear();
+        d.draw_xbitmap(0, 0, &[0x80], 8, 1, true);
+        let fb = d.fb();
+        assert!(pixel(fb, 7, 0)); // bit7
+        assert!(!pixel(fb, 0, 0));
     }
 }

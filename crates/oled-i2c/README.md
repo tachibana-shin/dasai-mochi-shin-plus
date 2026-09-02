@@ -60,6 +60,24 @@ Please reach out if you need a `.qgif`-style font converter!
 ## Pixel / shape drawing
 
 * `set_pixel(x, y, on)` — single pixel in the internal buffer.
+* `draw_hline(x, y, w, on)` / `draw_vline(x, y, h, on)` — fast axis-aligned
+  lines (GFX `drawFastHLine`/`drawFastVLine`).
+* `fill_rect(x, y, w, h, on)` / `draw_rect(x, y, w, h, on)` — filled and
+  1-px outline rectangles.
+* `draw_line(x0, y0, x1, y1, on)` — Bresenham line between two points.
+* `fill_screen(on)` — fill the whole panel (`fillScreen`).
+* `draw_circle(x, y, r, on)` / `fill_circle(x, y, r, on)` — circle outline /
+  filled disc (`drawCircle`/`fillCircle`).
+* `draw_ellipse(x, y, rw, rh, on)` / `fill_ellipse(...)` — ellipse outline /
+  filled (`drawEllipse`/`fillEllipse`).
+* `draw_round_rect(x, y, w, h, r, on)` / `fill_round_rect(...)` — rounded
+  rectangle outline / filled (`drawRoundRect`/`fillRoundRect`).
+* `draw_triangle(x0,y0, x1,y1, x2,y2, on)` / `fill_triangle(...)` — triangle
+  outline / filled (`drawTriangle`/`fillTriangle`).
+* `draw_bitmap(x, y, data, w, h, on)` — 1bpp bitmap, MSB-first rows,
+  row-padded to whole bytes (GFX `drawBitmap`).
+* `draw_xbitmap(x, y, data, w, h, on)` — 1bpp X11 `.xbm` bitmap, LSB-first
+  rows (GFX `drawXBitmap`).
 * `fb()` / `fb_mut()` — read or directly edit the internal frame buffer.
 * `draw_frame(&buf)` — push a caller-supplied page-major buffer.
 * `clear()` / `clear_buffer()` / `flush()` — buffer management.
