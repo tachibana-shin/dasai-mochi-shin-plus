@@ -19,9 +19,14 @@
 //!
 //! The driver is generic over any [`embedded_hal::i2c::I2c`] implementation,
 //! so it compiles for every HAL that provides that trait (ESP32, STM32,
-//! RP2040, AVR, ...). It only draws raw 1bpp frames; for higher-level drawing
-//! (text, shapes, sprites) feed [`Oled::draw_frame`] from your own renderer or
-//! the `embedded-graphics` ecosystem.
+//! RP2040, AVR, ...).
+//!
+//! Besides writing raw 1bpp frames with [`Oled::draw_frame`] it also ships a
+//! small built-in 5x7 font and a text API that mimics the popular Arduino/
+//! PlatformIO libraries: `set_cursor` / `set_text_size` / `set_font` / `print`
+//! (Adafruit GFX style) and `draw_str` (U8g2 `drawStr` style). Text is
+//! rasterised into an internal frame buffer which you push with [`Oled::flush`]
+//! — exactly like `display()` / `sendBuffer()` in those libraries.
 //!
 //! # Example
 //!
@@ -35,15 +40,20 @@
 //! )
 //! .expect("OLED init failed");
 //!
-//! let mut frame = [0u8; 1024]; // 128x64
-//! frame[0] = 0b1010_1010;      // checkerboard top-left byte
-//! display.draw_frame(&frame).ok();
+//! display.clear().ok();
+//! display.set_cursor(0, 8);
+//! display.print("Hello!");
+//! display.flush().ok(); // push the internal buffer to the panel
 //! ```
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
 use embedded_hal::i2c::I2c;
+
+pub mod fonts;
+
+pub use fonts::{Font, Glyph, FONT_5X7};
 
 /// I2C control byte indicating that the following payload is **commands**.
 const CTRL_CMD: u8 = 0x00;
@@ -145,18 +155,44 @@ impl OledConfig {
 
 /// An I2C OLED display driver.
 ///
-/// Owns the I2C bus and lives as long as the peripheral. All send operations
-/// return the HAL's I2C error type so callers can decide how to react.
+/// Owns the I2C bus, a text-cursor state, and an internal 1bpp frame buffer
+/// that the drawing APIs write into. Push it to the panel with [`Oled::flush`]
+/// (or [`Oled::draw_frame`] for a raw, caller-supplied buffer). All send
+/// operations return the HAL's I2C error type so callers can decide how to
+/// react.
 pub struct Oled<I: I2c> {
     i2c: I,
     address: u8,
     config: OledConfig,
+    /// Internal page-major frame buffer (only the first
+    /// `config.frame_buf_size()` bytes are meaningful).
+    fb: [u8; MAX_FRAME_BUF_SIZE],
+    /// Text cursor used by [`Oled::print`] / [`Oled::print_char`].
+    cursor: (i16, i16),
+    /// Integer glyph scale factor used by the text APIs.
+    text_size: u8,
+    /// Pixel value drawn for glyph foreground pixels (`true` = on).
+    text_color: bool,
+    /// Wrap long lines at the right edge of the panel.
+    text_wrap: bool,
+    /// Currently selected font.
+    font: &'static Font,
 }
 
 impl<I: I2c> Oled<I> {
     /// Create a driver, send the init sequence and turn the display on.
     pub fn new(i2c: I, address: u8, config: OledConfig) -> Result<Self, I::Error> {
-        let mut display = Self { i2c, address, config };
+        let mut display = Self {
+            i2c,
+            address,
+            config,
+            fb: [0u8; MAX_FRAME_BUF_SIZE],
+            cursor: (0, 0),
+            text_size: 1,
+            text_color: true,
+            text_wrap: false,
+            font: &FONT_5X7,
+        };
         display.send_init()?;
         Ok(display)
     }
@@ -204,9 +240,11 @@ impl<I: I2c> Oled<I> {
         Ok(())
     }
 
-    /// Write one 1bpp frame buffer (exactly `config.frame_buf_size()` bytes,
-    /// page-major layout) to the display.
-    pub fn draw_frame(&mut self, buf: &[u8]) -> Result<(), I::Error> {
+    /// Push the internal frame buffer to the display.
+    ///
+    /// Equivalent to `display()` in Adafruit_SSD1306 / `sendBuffer()` in
+    /// U8g2. Each page is addressed with the configured column offset.
+    pub fn flush(&mut self) -> Result<(), I::Error> {
         let width = self.config.width as usize;
         let pages = self.config.page_count();
         let offset = self.config.column_offset;
@@ -220,16 +258,192 @@ impl<I: I2c> Oled<I> {
             let start = page as usize * width;
             let end = start + width;
             let mut data = [CTRL_DATA; 129]; // control byte + up to 128 columns
-            data[1..width + 1].copy_from_slice(&buf[start..end]);
+            data[1..width + 1].copy_from_slice(&self.fb[start..end]);
             self.i2c.write(self.address, &data[..width + 1])?;
         }
         Ok(())
     }
 
-    /// Clear the panel (write a zeroed frame buffer).
+    /// Write one 1bpp frame buffer (exactly `config.frame_buf_size()` bytes,
+    /// page-major layout) into the internal buffer and push it to the display.
+    pub fn draw_frame(&mut self, buf: &[u8]) -> Result<(), I::Error> {
+        let n = self.config.frame_buf_size();
+        self.fb[..n].copy_from_slice(&buf[..n]);
+        self.flush()
+    }
+
+    /// Clear the internal frame buffer and push it (the panel goes blank).
     pub fn clear(&mut self) -> Result<(), I::Error> {
-        let zeros = [0u8; MAX_FRAME_BUF_SIZE];
-        self.draw_frame(&zeros[..self.config.frame_buf_size()])
+        self.fb[..self.config.frame_buf_size()].fill(0);
+        self.flush()
+    }
+
+    /// Clear only the internal frame buffer; the panel is unchanged until
+    /// [`Oled::flush`].
+    pub fn clear_buffer(&mut self) {
+        self.fb[..self.config.frame_buf_size()].fill(0);
+    }
+
+    /// Borrow the internal frame buffer (`config.frame_buf_size()` bytes,
+    /// page-major).
+    pub fn fb(&self) -> &[u8] {
+        &self.fb[..self.config.frame_buf_size()]
+    }
+
+    /// Mutably borrow the internal frame buffer for direct pixel pokes.
+    pub fn fb_mut(&mut self) -> &mut [u8] {
+        &mut self.fb[..self.config.frame_buf_size()]
+    }
+
+    /// Set or clear a single pixel in the internal frame buffer.
+    pub fn set_pixel(&mut self, x: i16, y: i16, on: bool) {
+        let w = self.config.width as i16;
+        let h = self.config.height as i16;
+        if x < 0 || y < 0 || x >= w || y >= h {
+            return;
+        }
+        let (x, y) = (x as usize, y as usize);
+        let idx = (y / 8) * self.config.width as usize + x;
+        let mask = 1 << (y % 8);
+        if on {
+            self.fb[idx] |= mask;
+        } else {
+            self.fb[idx] &= !mask;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Text output (mimics Adafruit GFX + U8g2)
+    // ------------------------------------------------------------------
+
+    /// Set the text cursor used by [`Oled::print`].
+    pub fn set_cursor(&mut self, x: i16, y: i16) {
+        self.cursor = (x, y);
+    }
+
+    /// Current text cursor.
+    pub fn cursor(&self) -> (i16, i16) {
+        self.cursor
+    }
+
+    /// Integer glyph scale factor (1 = native size, 2 = double, ...).
+    pub fn set_text_size(&mut self, size: u8) {
+        self.text_size = size.max(1);
+    }
+
+    /// Current text scale factor.
+    pub fn text_size(&self) -> u8 {
+        self.text_size
+    }
+
+    /// Set the pixel value used for glyph foreground pixels.
+    pub fn set_text_color(&mut self, on: bool) {
+        self.text_color = on;
+    }
+
+    /// Enable/disable wrapping of long lines at the right panel edge.
+    pub fn set_text_wrap(&mut self, wrap: bool) {
+        self.text_wrap = wrap;
+    }
+
+    /// Select the font used by the text APIs. Default: [`FONT_5X7`].
+    pub fn set_font(&mut self, font: &'static Font) {
+        self.font = font;
+    }
+
+    /// The currently selected font.
+    pub fn font(&self) -> &'static Font {
+        self.font
+    }
+
+    /// Height of one text line in pixels at the current scale.
+    pub fn line_height(&self) -> u16 {
+        self.font.y_advance as u16 * self.text_size as u16
+    }
+
+    /// Rasterise one glyph with its top-left cell corner at `(x, y)`.
+    fn draw_glyph(&mut self, x: i16, y: i16, g: &Glyph) {
+        let size = self.text_size as i16;
+        let x0 = x + g.x_offset as i16;
+        let y0 = y + g.y_offset as i16;
+        for row in 0..g.height {
+            for col in 0..g.width {
+                if !self.font.glyph_bit(g, row, col) {
+                    continue;
+                }
+                let px = x0 + col as i16 * size;
+                let py = y0 + row as i16 * size;
+                for sy in 0..size {
+                    for sx in 0..size {
+                        self.set_pixel(px + sx, py + sy, self.text_color);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draw a single character with its glyph cell top-left at `(x, y)`.
+    pub fn draw_char(&mut self, x: i16, y: i16, ch: char) {
+        if let Some(g) = self.font.glyph_for(ch) {
+            self.draw_glyph(x, y, g);
+        }
+    }
+
+    /// Draw a string at an absolute position (U8g2 `drawStr` style).
+    /// `(x, y)` is the initial glyph cell corner; the cursor is untouched.
+    pub fn draw_str(&mut self, x: i16, y: i16, s: &str) {
+        let mut cx = x;
+        for ch in s.chars() {
+            if ch == '\n' {
+                cx = x;
+                continue;
+            }
+            if let Some(g) = self.font.glyph_for(ch) {
+                self.draw_glyph(cx, y, g);
+                cx += g.x_advance as i16 * self.text_size as i16;
+            }
+        }
+    }
+
+    /// Draw a single character at the cursor and advance it.
+    pub fn print_char(&mut self, ch: char) {
+        match ch {
+            '\n' => {
+                self.cursor = (0, self.cursor.1 + self.line_height() as i16);
+            }
+            '\r' => {}
+            _ => {
+                let adv = self.font.advance(ch) as i16 * self.text_size as i16;
+                if self.text_wrap && self.cursor.0 + adv > self.config.width as i16 {
+                    self.cursor = (0, self.cursor.1 + self.line_height() as i16);
+                }
+                if let Some(g) = self.font.glyph_for(ch) {
+                    self.draw_glyph(self.cursor.0, self.cursor.1, g);
+                }
+                self.cursor.0 += adv;
+            }
+        }
+    }
+
+    /// Draw a string at the cursor and advance it (Adafruit `print` style).
+    /// `\n` moves to the next line.
+    pub fn print(&mut self, s: &str) {
+        for ch in s.chars() {
+            self.print_char(ch);
+        }
+    }
+
+    /// Measure a string's bounding box `(width, height)` in pixels at the
+    /// current font and text size.
+    pub fn measure_text(&self, s: &str) -> (u16, u16) {
+        let size = self.text_size as u16;
+        let w = s
+            .chars()
+            .filter(|c| *c != '\n')
+            .fold(0u16, |acc, c| {
+                acc.saturating_add(self.font.advance(c) as u16 * size)
+            });
+        (w, self.font.y_advance as u16 * size)
     }
 
     /// Turn the display off (RAM contents are kept).
@@ -264,5 +478,143 @@ impl<I: I2c> Oled<I> {
     /// The embedded I2C bus, for callers that need direct access temporarily.
     pub fn i2c(&mut self) -> &mut I {
         &mut self.i2c
+    }
+}
+
+/// Support `write!(display, "{}", ..)` for formatted output (like Arduino
+/// `print` of numbers / strings). Draws at the current text cursor.
+impl<I: I2c> core::fmt::Write for Oled<I> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.print(s);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embedded_hal::i2c::ErrorType;
+
+    /// No-op I2C bus used to instantiate a real `Oled` on the host.
+    struct MockBus;
+
+    type MockError = core::convert::Infallible;
+
+    impl ErrorType for MockBus {
+        type Error = MockError;
+    }
+    impl I2c for MockBus {
+        fn transaction<'a>(
+            &mut self,
+            _addr: u8,
+            _ops: &mut [embedded_hal::i2c::Operation<'a>],
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    fn new_display() -> Oled<MockBus> {
+        Oled::new(MockBus, 0x3C, OledConfig::sh1106_128x64()).expect("init")
+    }
+
+    fn pixel(fb: &[u8], x: u16, y: u16) -> bool {
+        let idx = (y / 8) as usize * 128 + x as usize;
+        (fb[idx] >> (y % 8)) & 1 == 1
+    }
+
+    #[test]
+    fn font_has_95_ascii_glyphs() {
+        let f = &FONT_5X7;
+        assert_eq!(f.first, 0x20);
+        assert_eq!(f.last, 0x7E);
+        assert_eq!(f.glyphs.len(), 0x7E - 0x20 + 1);
+        // 'A' first non-empty row is row 0 (top of the cell).
+        let g = f.glyph_for('A').expect("A in range");
+        assert!(f.glyph_bit(g, 0, 2)); // peak of 'A'
+        assert!(!f.glyph_bit(g, 0, 0));
+    }
+
+    #[test]
+    fn font_out_of_range_is_none() {
+        assert!(FONT_5X7.glyph_for('\u{10FFFF}').is_none());
+        assert_eq!(FONT_5X7.advance('A'), 6);
+    }
+
+    #[test]
+    fn draw_str_sets_pixels() {
+        let mut d = new_display();
+        d.clear();
+        d.draw_str(0, 0, "A");
+        let fb = d.fb();
+        // top of 'A' is at cell row 0, col 2 -> pixel (2, 0)
+        assert!(pixel(fb, 2, 0));
+        assert!(!pixel(fb, 0, 0));
+        // row 1 of 'A' has arms at col 1 and col 3
+        assert!(pixel(fb, 1, 1));
+        assert!(pixel(fb, 3, 1));
+        // x_advance = 6, so nothing at col 5
+        assert!(!pixel(fb, 5, 0));
+    }
+
+    #[test]
+    fn print_moves_cursor_and_newline() {
+        let mut d = new_display();
+        d.clear();
+        d.set_cursor(0, 0);
+        d.print("hi");
+        assert_eq!(d.cursor(), (12, 0));
+        d.print("\n!");
+        assert_eq!(d.cursor(), (6, 8));
+    }
+
+    #[test]
+    fn print_wraps_when_enabled() {
+        let mut d = new_display();
+        d.clear();
+        d.set_text_wrap(true);
+        d.set_cursor(120, 0); // near right edge
+        d.print("ABCDE");
+        // 'A' at 120, 'B' wraps to line 2, then C/D/E follow on line 2.
+        assert_eq!(d.cursor(), (24, 8));
+    }
+
+    #[test]
+    fn text_size_scales() {
+        let mut d = new_display();
+        d.clear();
+        d.set_text_size(2);
+        d.draw_str(0, 0, "A");
+        let fb = d.fb();
+        // scaled 2x: glyph pixel (col2,row0) covers cell (4..=5, 0..=1).
+        assert!(pixel(fb, 4, 0));
+        assert!(pixel(fb, 5, 1));
+        // glyph row1 = ".#.#...": col1 is ink, col2 is the hole.
+        // (col1,row1) -> cell (2..=3, 2..=3); (col2,row1) -> (4..=5, 2..=3).
+        assert!(pixel(fb, 3, 2));
+        assert!(!pixel(fb, 4, 2));
+    }
+
+    #[test]
+    fn measure_text_uses_advances() {
+        let d = new_display();
+        assert_eq!(d.measure_text(""), (0, 8));
+        assert_eq!(d.measure_text("abc"), (18, 8));
+        let mut d = d;
+        d.set_text_size(2);
+        assert_eq!(d.measure_text("ab"), (24, 16));
+    }
+
+    #[test]
+    fn fmt_write_formats_numbers() {
+        use core::fmt::Write as _;
+        let mut d = new_display();
+        d.clear();
+        d.set_cursor(0, 0);
+        write!(d, "v{}", 42_i32).expect("write");
+        assert_eq!(d.cursor(), (18, 0)); // "v42" = 3 chars x 6px
+        let fb = d.fb();
+        // 'v' glyph rows: rows 0-1 blank, its first ink is at col0,row2.
+        assert!(!pixel(fb, 0, 0));
+        assert!(pixel(fb, 0, 2));
     }
 }
