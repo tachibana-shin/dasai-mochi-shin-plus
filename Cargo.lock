@@ -1122,6 +1122,7 @@ version = "0.2.0"
 dependencies = [
  "embedded-graphics",
  "embedded-hal 1.0.0",
+ "heapless 0.8.0",
 ]
 
 [[package]]

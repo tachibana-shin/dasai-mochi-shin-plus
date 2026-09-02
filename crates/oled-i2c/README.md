@@ -55,7 +55,32 @@ use the same Adafruit GFX `GFXfont` layout (see `src/fonts.rs` for the struct
 definition), so fonts produced by `fontconvert` or similar tools can be copied
 into a `static Font` almost verbatim.
 
-Please reach out if you need a `.qgif`-style font converter!
+### Runtime `.bdf` fonts
+
+If you need to load a font at runtime (e.g. from an SD card), the driver also
+parses the plain-text **`.bdf` (Glyph Bitmap Distribution Format)**:
+a `<BdfFont>::parse(&bytes)` produces an owned font that borrows as a normal
+`Font` for the one-shot `draw_str_with` / `draw_char_with` / `measure_text_with`
+APIs:
+
+```rust,ignore
+use oled_i2c::bdf::BdfFont;
+
+// Read a .bdf file's bytes (from SD / flash) into `data`.
+let font = BdfFont::<8192, 256>::parse(&data)?;   // capacities are type params
+let (w, h) = display.measure_text_with("Hi", &font.font());
+display.draw_str_with(x, y, "Hi", &font.font());
+```
+
+- `BdfFont<BITMAP_CAP, SPAN_CAP>` — `BITMAP_CAP` total bitmap bytes,
+  `SPAN_CAP` = max code span (`last - first + 1`) it can address. Codes the
+  font doesn't define get blank placeholders.
+- Metrics come from the file: height from `FONT_ASCENT + FONT_DESCENT`
+  (falling back to the global `FONTBOUNDINGBOX` height), advances from
+  `DWIDTH`, and origin offsets from `BBX`.
+- Helpers: `crates/oled-i2c/tools/make_sample_bdf.py` writes a small 5x7
+  `FONT.BDF`, and `crates/oled-i2c/tools/convert_bdf.py` embeds any `.bdf`
+  font as a compiled-in `static Font<'static>`.
 
 ## Pixel / shape drawing
 

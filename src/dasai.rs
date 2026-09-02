@@ -11,6 +11,7 @@ use esp_hal::peripherals::Peripherals;
 use esp_hal::time::{Instant, Rate};
 use esp_hal::Blocking;
 use esp_println::{print, println};
+use oled_i2c::bdf::BdfFont;
 use oled_i2c::{Oled, OledConfig};
 
 use crate::config;
@@ -199,6 +200,65 @@ fn face_path(info: &FacesInfo, fname: &str) -> heapless::String<48> {
     s
 }
 
+// ---------------------------------------------------------------------------
+// Optional runtime `.bdf` bitmap font, loaded from the SD card at boot
+// ---------------------------------------------------------------------------
+
+/// SD path of the optional bitmap font file. If present, it is parsed with
+/// the driver's BDF loader and used to render a short boot banner (and is
+/// available for later text). If missing/unparseable, the built-in 5x7 font
+/// is used instead.
+const FONT_FILE_PATH: &str = "/FONT.BDF";
+/// Max size (bytes) of the `.bdf` text we are willing to load at boot.
+const MAX_FONT_FILE: usize = 8192;
+/// Capacity of the runtime font owned by the boot path.
+const FONT_BITMAP_CAP: usize = 4096;
+const FONT_SPAN_CAP: usize = 128;
+
+/// Try to read + parse `/FONT.BDF` into an owned runtime font.
+fn try_load_font(sd: &sd::Sd) -> Option<BdfFont<FONT_BITMAP_CAP, FONT_SPAN_CAP>> {
+    let len = match sd.file_len(FONT_FILE_PATH) {
+        Ok(l) => l as usize,
+        Err(_) => {
+            println!("FONT.BDF: not found on SD");
+            return None;
+        }
+    };
+    if len == 0 || len > MAX_FONT_FILE {
+        println!("FONT.BDF: size {} too large/small (max {})", len, MAX_FONT_FILE);
+        return None;
+    }
+    let mut buf = [0u8; MAX_FONT_FILE];
+    let n = match sd.read_file(FONT_FILE_PATH, &mut buf) {
+        Ok(n) => n,
+        Err(e) => {
+            println!("FONT.BDF: read error {:?}", e);
+            return None;
+        }
+    };
+    match BdfFont::<FONT_BITMAP_CAP, FONT_SPAN_CAP>::parse(&buf[..n]) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            println!("FONT.BDF: parse error {:?}", e);
+            None
+        }
+    }
+}
+
+/// Show a short, centered boot banner with the given (runtime) font.
+fn show_boot_banner(display: &mut Display, delay: &Delay, font: &BdfFont<FONT_BITMAP_CAP, FONT_SPAN_CAP>) {
+    const MSG: &str = "DASAI MOCHI";
+    let (w, h) = display.measure_text_with(MSG, &font.font());
+    let x = (SCREEN_WIDTH as i16 - w as i16) / 2;
+    let y = (SCREEN_HEIGHT as i16 - h as i16) / 2;
+    let _ = display.clear();
+    display.draw_str_with(x, y, MSG, &font.font());
+    let _ = display.flush();
+    delay.delay_millis(1500);
+    let _ = display.clear();
+    let _ = display.flush();
+}
+
 /// Play faces from SD card forever (infinite loop).
 ///
 /// Initialises the SD card once, then plays faces in an infinite loop.
@@ -231,6 +291,17 @@ fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) ->
 
     let mut frame_buf = [0u8; FRAME_BUF_SIZE];
     let mut face_idx = 0usize;
+
+    // Optionally load a custom `.bdf` font from SD and show a boot banner.
+    if let Some(font) = try_load_font(&sd) {
+        println!(
+            "FONT.BDF loaded: {} glyphs, charset {:#06x}..{:#06x}",
+            font.glyph_count(),
+            font.first(),
+            font.last()
+        );
+        show_boot_banner(display, delay, &font);
+    }
 
     // Infinite playback loop. Each face opens its file by absolute path; the
     // driver re-opens volume + dirs per file, which is a few cached block

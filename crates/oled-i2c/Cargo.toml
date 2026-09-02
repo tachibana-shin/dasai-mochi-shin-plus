@@ -10,6 +10,8 @@ categories = ["embedded", "hardware-support", "no-std"]
 [dependencies]
 embedded-hal = "1.0"
 embedded-graphics = { version = "0.8", optional = true }
+# Fixed-capacity no_std collections for the runtime `.bdf` font loader.
+heapless = "0.8"
 
 [features]
 default = []

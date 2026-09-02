@@ -27,12 +27,16 @@ pub struct Glyph {
 }
 
 /// A 1bpp bitmap font (GFXfont-compatible).
+///
+/// `Font` borrows its bitmap + metrics table, so it can be either a
+/// compile-time static (like [`FONT_5X7`]) or built over runtime-owned data
+/// such as a [`BdfFont`](crate::bdf::BdfFont) parsed from a `.bdf` file.
 #[derive(Debug, Clone, Copy)]
-pub struct Font {
+pub struct Font<'a> {
     /// All glyph bitmaps concatenated, row-major 1bpp, bit 7 = leftmost.
-    pub bitmap: &'static [u8],
+    pub bitmap: &'a [u8],
     /// Glyph metrics, indexed by `char - first`.
-    pub glyphs: &'static [Glyph],
+    pub glyphs: &'a [Glyph],
     /// First character code covered by this font.
     pub first: u16,
     /// Last character code covered by this font.
@@ -41,9 +45,9 @@ pub struct Font {
     pub y_advance: u8,
 }
 
-impl Font {
+impl<'a> Font<'a> {
     /// Look up the glyph for a character, or `None` if out of range.
-    pub fn glyph_for(&self, c: char) -> Option<&'static Glyph> {
+    pub fn glyph_for(&self, c: char) -> Option<&'a Glyph> {
         let code = c as u32;
         if code < self.first as u32 || code > self.last as u32 {
             return None;
@@ -70,7 +74,7 @@ impl Font {
 /// Same shapes as Adafruit GFX's classic `glcdfont` (MIT). Each glyph is 5
 /// pixels wide, 7 rows of ink inside an 8-tall cell, `x_advance = 6`,
 /// `y_advance = 8` — two rows naturally leave a 1 px gap.
-pub static FONT_5X7: Font = Font {
+pub static FONT_5X7: Font<'static> = Font {
     bitmap: &[
 
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x20, 0x20, 0x20,

@@ -54,6 +54,7 @@
 
 use embedded_hal::i2c::I2c;
 
+pub mod bdf;
 pub mod fonts;
 
 #[cfg(feature = "embedded-graphics")]
@@ -182,7 +183,7 @@ pub struct Oled<I: I2c> {
     /// Wrap long lines at the right edge of the panel.
     text_wrap: bool,
     /// Currently selected font.
-    font: &'static Font,
+    font: &'static Font<'static>,
     /// Panel rotation: 0 = none, 1 = 90° CW, 2 = 180°, 3 = 270° CW,
     /// applied on the drawing APIs (the raw frame buffer stays physical).
     rotation: u8,
@@ -872,12 +873,12 @@ impl<I: I2c> Oled<I> {
     }
 
     /// Select the font used by the text APIs. Default: [`FONT_5X7`].
-    pub fn set_font(&mut self, font: &'static Font) {
+    pub fn set_font(&mut self, font: &'static Font<'static>) {
         self.font = font;
     }
 
     /// The currently selected font.
-    pub fn font(&self) -> &'static Font {
+    pub fn font(&self) -> &'static Font<'static> {
         self.font
     }
 
@@ -887,13 +888,13 @@ impl<I: I2c> Oled<I> {
     }
 
     /// Rasterise one glyph with its top-left cell corner at `(x, y)`.
-    fn draw_glyph(&mut self, x: i16, y: i16, g: &Glyph) {
+    fn draw_glyph(&mut self, x: i16, y: i16, g: &Glyph, font: &Font<'_>) {
         let size = self.text_size as i16;
         let x0 = x + g.x_offset as i16;
         let y0 = y + g.y_offset as i16;
         for row in 0..g.height {
             for col in 0..g.width {
-                if !self.font.glyph_bit(g, row, col) {
+                if !font.glyph_bit(g, row, col) {
                     continue;
                 }
                 let px = x0 + col as i16 * size;
@@ -909,22 +910,34 @@ impl<I: I2c> Oled<I> {
 
     /// Draw a single character with its glyph cell top-left at `(x, y)`.
     pub fn draw_char(&mut self, x: i16, y: i16, ch: char) {
-        if let Some(g) = self.font.glyph_for(ch) {
-            self.draw_glyph(x, y, g);
+        self.draw_char_with(x, y, ch, self.font);
+    }
+
+    /// Draw a single character with a specific font (not necessarily the
+    /// stored one). Useful for runtime fonts such as a [`BdfFont`](crate::bdf::BdfFont).
+    pub fn draw_char_with(&mut self, x: i16, y: i16, ch: char, font: &Font<'_>) {
+        if let Some(g) = font.glyph_for(ch) {
+            self.draw_glyph(x, y, g, font);
         }
     }
 
     /// Draw a string at an absolute position (U8g2 `drawStr` style).
     /// `(x, y)` is the initial glyph cell corner; the cursor is untouched.
     pub fn draw_str(&mut self, x: i16, y: i16, s: &str) {
+        self.draw_str_with(x, y, s, self.font);
+    }
+
+    /// Draw a string at an absolute position using a specific font.
+    /// `(x, y)` is the initial glyph cell corner; the cursor is untouched.
+    pub fn draw_str_with(&mut self, x: i16, y: i16, s: &str, font: &Font<'_>) {
         let mut cx = x;
         for ch in s.chars() {
             if ch == '\n' {
                 cx = x;
                 continue;
             }
-            if let Some(g) = self.font.glyph_for(ch) {
-                self.draw_glyph(cx, y, g);
+            if let Some(g) = font.glyph_for(ch) {
+                self.draw_glyph(cx, y, g, font);
                 cx += g.x_advance as i16 * self.text_size as i16;
             }
         }
@@ -943,7 +956,7 @@ impl<I: I2c> Oled<I> {
                     self.cursor = (0, self.cursor.1 + self.line_height() as i16);
                 }
                 if let Some(g) = self.font.glyph_for(ch) {
-                    self.draw_glyph(self.cursor.0, self.cursor.1, g);
+                    self.draw_glyph(self.cursor.0, self.cursor.1, g, self.font);
                 }
                 self.cursor.0 += adv;
             }
@@ -961,14 +974,20 @@ impl<I: I2c> Oled<I> {
     /// Measure a string's bounding box `(width, height)` in pixels at the
     /// current font and text size.
     pub fn measure_text(&self, s: &str) -> (u16, u16) {
+        self.measure_text_with(s, self.font)
+    }
+
+    /// Measure a string's bounding box like [`Oled::measure_text`] but using
+    /// a specific font.
+    pub fn measure_text_with(&self, s: &str, font: &Font<'_>) -> (u16, u16) {
         let size = self.text_size as u16;
         let w = s
             .chars()
             .filter(|c| *c != '\n')
             .fold(0u16, |acc, c| {
-                acc.saturating_add(self.font.advance(c) as u16 * size)
+                acc.saturating_add(font.advance(c) as u16 * size)
             });
-        (w, self.font.y_advance as u16 * size)
+        (w, font.y_advance as u16 * size)
     }
 
     /// Turn the display off (RAM contents are kept).
@@ -1079,6 +1098,49 @@ mod tests {
         assert!(pixel(fb, 3, 1));
         // x_advance = 6, so nothing at col 5
         assert!(!pixel(fb, 5, 0));
+    }
+
+    #[test]
+    fn draw_str_with_uses_bdf_font() {
+        // A one-glyph BDF font: 'A' at (1,1) is the only lit pixel.
+        let bdf = "\
+STARTFONT 2.1
+FONT -t-x
+SIZE 1
+FONTBOUNDINGBOX 3 3 0 0
+STARTPROPERTIES 1
+FONT_ASCENT 3
+FONT_DESCENT 0
+ENDPROPERTIES
+CHARS 1
+STARTCHAR A
+ENCODING 65
+DWIDTH 3 0
+BBX 3 3 0 0
+BITMAP
+20
+40
+20
+ENDCHAR
+ENDCHARS
+ENDFONT
+";
+        let font = crate::bdf::BdfFont::<64, 64>::parse(bdf.as_bytes()).expect("parse");
+        let mut d = new_display();
+        d.clear();
+        d.draw_str_with(0, 0, "A", &font.font());
+        let fb = d.fb();
+        // Row0 = 0x20 -> bit5 -> col 2 lit; row1 = 0x40 -> bit6 -> col 1 lit;
+        // row2 = 0x20 -> col 2 lit.
+        assert!(pixel(fb, 2, 0));
+        assert!(pixel(fb, 1, 1));
+        assert!(pixel(fb, 2, 2));
+        assert!(!pixel(fb, 0, 0));
+        assert!(!pixel(fb, 2, 1));
+        // measure_text_with agrees with the font advance.
+        let (w, h) = d.measure_text_with("A", &font.font());
+        assert_eq!(w, 3);
+        assert_eq!(h, 3);
     }
 
     #[test]
