@@ -91,3 +91,7 @@ pub const BOOT_BANNER_MS: i64 = 3000;
 
 /// Maximum frame buffer size we accept (128x64 => 1024 bytes, matching OLED).
 pub const MAX_FRAME_BYTES: usize = 128 * 64 / 8;
+
+/// Maximum number of frames we accept in a single `.qgif`. Must match the
+/// size of `QgifHeader::delays` (512 => 1024 bytes of RAM on the stack).
+pub const MAX_FRAME_COUNT: usize = 512;

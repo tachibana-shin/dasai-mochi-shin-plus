@@ -39,7 +39,7 @@ pub struct QgifHeader {
     /// Frame height in pixels.
     pub height: u16,
     /// Per-frame duration in milliseconds.
-    pub delays: [u16; 256],
+    pub delays: [u16; config::MAX_FRAME_COUNT],
     /// Bytes per frame (`ceil(width/8) * height`).
     pub frame_bytes: u16,
     /// Byte offset in the file where frame data begins.
@@ -79,7 +79,7 @@ impl QgifHeader {
                 )
             };
 
-        if frame_count == 0 || frame_count > 256 {
+        if frame_count == 0 || frame_count as usize > config::MAX_FRAME_COUNT {
             return None;
         }
 
@@ -89,9 +89,9 @@ impl QgifHeader {
         }
 
         // Read the delays array.
-        let mut delays = [0u16; 256];
+        let mut delays = [0u16; config::MAX_FRAME_COUNT];
         let delay_bytes = (frame_count as usize) * 2;
-        let mut raw = [0u8; 512];
+        let mut raw = [0u8; config::MAX_FRAME_COUNT * 2];
         if read_at(header_size, &mut raw[..delay_bytes]) != delay_bytes {
             return None;
         }
