@@ -44,7 +44,10 @@ The driver draws text into an internal frame buffer and pushes it with
 * `set_cursor(x, y)` / `print("..")` — cursor based (Adafruit GFX style).
 * `draw_str(x, y, "..")` — absolute position (U8g2 `drawStr` style).
 * `draw_char(x, y, c)`, `print_char(c)` — single glyphs.
-* `set_text_size(n)` — integer scale factor (1, 2, 3, ...).
+* `set_text_size(n)` — integer scale factor (1, 2, 3, ...), i.e.
+  `set_text_scale(n, 1)`.
+* `set_text_scale(num, den)` — rational scale factor (e.g. `3/2` = 1.5x,
+  `7/10` = 0.7x) for fractional sizes between the integer steps.
 * `set_text_color(on: bool)` — pixel value for glyph pixels.
 * `set_text_overflow(mode)` — how lines are handled at the right edge (see the
   [`TextOverflow`] modes below). `set_text_wrap(bool)` is kept as a shorthand

@@ -199,10 +199,12 @@ pub struct Oled<I: I2c> {
     fb: [u8; MAX_FRAME_BUF_SIZE],
     /// Text cursor used by [`Oled::print`] / [`Oled::print_char`].
     cursor: (i16, i16),
-    /// Integer glyph scale factor used by the text APIs.
-    text_size: u8,
     /// Pixel value drawn for glyph foreground pixels (`true` = on).
     text_color: bool,
+    /// Text scale, stored as a rational `text_scale_num / text_scale_den`
+    /// (`den == 1` for plain integer scales). 1 is the native glyph size.
+    text_scale_num: u32,
+    text_scale_den: u32,
     /// How the text APIs handle lines that exceed the panel width.
     text_overflow: TextOverflow,
     /// Marker appended by [`TextOverflow::Ellipsis`] (default `"..."`).
@@ -223,8 +225,9 @@ impl<I: I2c> Oled<I> {
             config,
             fb: [0u8; MAX_FRAME_BUF_SIZE],
             cursor: (0, 0),
-            text_size: 1,
             text_color: true,
+            text_scale_num: 1,
+            text_scale_den: 1,
             text_overflow: TextOverflow::None,
             ellipsis: "...",
             font: &FONT_5X7,
@@ -879,13 +882,21 @@ impl<I: I2c> Oled<I> {
     }
 
     /// Integer glyph scale factor (1 = native size, 2 = double, ...).
+    /// Shorthand for [`Oled::set_text_scale`] with `den = 1`.
     pub fn set_text_size(&mut self, size: u8) {
-        self.text_size = size.max(1);
+        self.set_text_scale(size.max(1) as u32, 1);
     }
 
-    /// Current text scale factor.
+    /// Set the text scale as a rational `num / den` (e.g. `3/2` = 1.5x,
+    /// `7/10` = 0.7x). 1 is the native glyph size. Rounded down per pixel.
+    pub fn set_text_scale(&mut self, num: u32, den: u32) {
+        self.text_scale_num = num.max(1);
+        self.text_scale_den = den.max(1);
+    }
+
+    /// The integer part of the current scale factor (`num / den`).
     pub fn text_size(&self) -> u8 {
-        self.text_size
+        (self.text_scale_num / self.text_scale_den) as u8
     }
 
     /// Set the pixel value used for glyph foreground pixels.
@@ -939,7 +950,17 @@ impl<I: I2c> Oled<I> {
 
     /// Height of one text line in pixels at the current scale.
     pub fn line_height(&self) -> u16 {
-        self.font.y_advance as u16 * self.text_size as u16
+        (self.font.y_advance as u32 * self.text_scale_num / self.text_scale_den) as u16
+    }
+
+    /// Scale `v` by the current rational text scale (rounded down).
+    fn scale(&self, v: i16) -> i16 {
+        (v as i32 * self.text_scale_num as i32 / self.text_scale_den as i32) as i16
+    }
+
+    /// Scaled horizontal advance (in pixels) of `c` in `font`.
+    fn adv(&self, font: &Font<'_>, c: char) -> i16 {
+        self.scale(font.advance(c) as i16)
     }
 
     /// Rasterise one glyph with its top-left cell corner at `(x, y)`.
@@ -958,7 +979,8 @@ impl<I: I2c> Oled<I> {
         clip_l: i16,
         clip_r: i16,
     ) {
-        let size = self.text_size as i16;
+        let num = self.text_scale_num as i32;
+        let den = self.text_scale_den as i32;
         let x0 = x + g.x_offset as i16;
         let y0 = y + g.y_offset as i16;
         for row in 0..g.height {
@@ -966,13 +988,20 @@ impl<I: I2c> Oled<I> {
                 if !font.glyph_bit(g, row, col) {
                     continue;
                 }
-                let px = x0 + col as i16 * size;
-                if px + size <= clip_l || px >= clip_r {
+                // Scaled span of this glyph pixel: [s*s/.., (s+1)*s/..).
+                let sx0 = (col as i32 * num / den) as i16;
+                let sx1 = ((col as i32 + 1) * num / den) as i16;
+                let sy0 = (row as i32 * num / den) as i16;
+                let sy1 = ((row as i32 + 1) * num / den) as i16;
+                let px = x0 + sx0;
+                let pw = sx1 - sx0;
+                let py = y0 + sy0;
+                let ph = sy1 - sy0;
+                if px + pw <= clip_l || px >= clip_r {
                     continue;
                 }
-                let py = y0 + row as i16 * size;
-                for sy in 0..size {
-                    for sx in 0..size {
+                for sy in 0..ph {
+                    for sx in 0..pw {
                         let ax = px + sx;
                         if ax >= clip_l && ax < clip_r {
                             self.set_pixel(ax, py + sy, self.text_color);
@@ -1036,9 +1065,8 @@ impl<I: I2c> Oled<I> {
             TextOverflow::Wrap => {
                 let mut cx = x;
                 let mut cy = y;
-                let size = self.text_size as i16;
                 for ch in line.chars() {
-                    let adv = font.advance(ch) as i16 * size;
+                    let adv = self.adv(font, ch);
                     if cx + adv > width {
                         cx = x;
                         cy += line_h;
@@ -1068,7 +1096,7 @@ impl<I: I2c> Oled<I> {
                     let mut exs = ex;
                     for &c in &ell_chars {
                         self.draw_char_with(exs, cy, c, font);
-                        exs += font.advance(c) as i16 * self.text_size as i16;
+                        exs += self.adv(font, c);
                     }
                     cy += line_h;
                     rest = &rest[take..];
@@ -1083,25 +1111,23 @@ impl<I: I2c> Oled<I> {
         let mut cx = x;
         for ch in line.chars() {
             self.draw_char_with(cx, y, ch, font);
-            cx += font.advance(ch) as i16 * self.text_size as i16;
+            cx += self.adv(font, ch);
         }
     }
 
     /// Pixel width of `s` with `font` at the current text size.
     fn str_width_px(&self, s: &str, font: &Font<'_>) -> i16 {
-        s.chars()
-            .fold(0i16, |a, c| a + font.advance(c) as i16 * self.text_size as i16)
+        s.chars().fold(0i16, |a, c| a + self.adv(font, c))
     }
 
     /// Number of leading bytes of `line` whose total width fits within
     /// `budget` pixels (a `char` boundary), or `0` if even the first char
     /// overflows.
     fn fit_prefix(&self, line: &str, budget: i16, font: &Font<'_>) -> usize {
-        let size = self.text_size as i16;
         let mut w = 0i16;
         let mut byte = 0usize;
         for (i, c) in line.char_indices() {
-            let adv = font.advance(c) as i16 * size;
+            let adv = self.adv(font, c);
             if w + adv > budget {
                 break;
             }
@@ -1129,13 +1155,12 @@ impl<I: I2c> Oled<I> {
         font: &Font<'_>,
     ) {
         let right = x + width as i16;
-        let size = self.text_size as i16;
         let mut cx = x - offset_px;
         for ch in s.chars() {
-            let adv = font.advance(ch) as i16 * size;
+            let adv = self.adv(font, ch);
             if let Some(g) = font.glyph_for(ch) {
                 let gx0 = cx + g.x_offset as i16;
-                let gw = g.width as i16 * size;
+                let gw = self.scale(g.width as i16);
                 if gx0 < right && gx0 + gw >= x {
                     self.raster_glyph_clipped(cx, y, g, font, x, right);
                 }
@@ -1152,7 +1177,7 @@ impl<I: I2c> Oled<I> {
             }
             '\r' => {}
             _ => {
-                let adv = self.font.advance(ch) as i16 * self.text_size as i16;
+                let adv = self.adv(self.font, ch);
                 if self.text_overflow == TextOverflow::Wrap
                     && self.cursor.0 + adv > self.width() as i16
                 {
@@ -1195,7 +1220,7 @@ impl<I: I2c> Oled<I> {
             let ell_w = self
                 .ellipsis
                 .chars()
-                .fold(0i16, |a, c| a + self.font.advance(c) as i16 * self.text_size as i16);
+                .fold(0i16, |a, c| a + self.adv(self.font, c));
             let mut sub = line;
             while !sub.is_empty() {
                 let avail = self.width() as i16 - self.cursor.0;
@@ -1237,14 +1262,12 @@ impl<I: I2c> Oled<I> {
     /// Measure a string's bounding box like [`Oled::measure_text`] but using
     /// a specific font.
     pub fn measure_text_with(&self, s: &str, font: &Font<'_>) -> (u16, u16) {
-        let size = self.text_size as u16;
         let w = s
             .chars()
             .filter(|c| *c != '\n')
-            .fold(0u16, |acc, c| {
-                acc.saturating_add(font.advance(c) as u16 * size)
-            });
-        (w, font.y_advance as u16 * size)
+            .fold(0u16, |acc, c| acc.saturating_add(self.adv(font, c) as u16));
+        let h = (font.y_advance as u32 * self.text_scale_num / self.text_scale_den) as u16;
+        (w, h)
     }
 
     /// Turn the display off (RAM contents are kept).
@@ -1446,6 +1469,17 @@ ENDFONT
         let mut d = d;
         d.set_text_size(2);
         assert_eq!(d.measure_text("ab"), (24, 16));
+    }
+
+    #[test]
+    fn rational_scale_half_again() {
+        let mut d = new_display();
+        d.clear();
+        d.set_text_scale(3, 2); // 1.5x
+        assert_eq!(d.measure_text("abc"), (27, 12)); // 6*1.5=9, y 8*1.5=12
+        assert_eq!(d.text_size(), 1); // integer part of 3/2
+        // In fallback "hello" at cursor: measured advance for 'A' is 9px.
+        assert_eq!(d.adv(&FONT_5X7, 'A'), 9);
     }
 
     #[test]

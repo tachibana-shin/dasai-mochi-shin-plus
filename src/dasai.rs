@@ -252,13 +252,16 @@ const BOOT_BANNER_MS: i64 = 3000;
 /// loaded, otherwise the built-in 5x7 font), wrapping long lines instead of
 /// scrolling, then finish startup.
 fn show_boot_banner(display: &mut Display, delay: &Delay, font: &Font<'_>) {
-    const MSG: &str = "Dasai Mochi by Tachibana Shin";
+    // 1.5x the 5x7 size; split into short lines so word breaks stay clean.
+    const MSG: &str = "Dasai Mochi\nby Tachibana\nShin";
     // Text wrap instead of marquee: long lines break at the right edge.
     display.set_text_overflow(TextOverflow::Wrap);
-    display.set_text_size(1);
+    display.set_text_scale(3, 2); // 1.5x
 
-    // Center the (potentially 2-line) message vertically.
-    let y = (SCREEN_HEIGHT as i16 - display.line_height() as i16 * 2) / 2;
+    // Clear the last intro frame so the text isn't drawn on top of it.
+    display.clear_buffer();
+    // Center the (3-line) message vertically.
+    let y = (SCREEN_HEIGHT as i16 - display.line_height() as i16 * 3) / 2;
     display.draw_str_with(0, y, MSG, font);
     let _ = display.flush();
 
