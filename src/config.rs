@@ -67,3 +67,39 @@ pub const MOCHI_CLOCK_DURATION: u64 = 5_000; // 5 seconds
 
 /// SPI frequency for the SD card (400 kHz is the safe init speed).
 pub const SD_SPI_FREQ_KHZ: u32 = 400;
+
+// ---------------------------------------------------------------------------
+// Analog clock placeholder (shown between faces)
+// ---------------------------------------------------------------------------
+
+/// Clock face hub / centre in panel pixels.
+pub const CLOCK_CX: i16 = 64;
+pub const CLOCK_CY: i16 = 32;
+/// Clock face rim radius in pixels.
+pub const CLOCK_R: i16 = 27;
+
+// ---------------------------------------------------------------------------
+// Boot banner
+// ---------------------------------------------------------------------------
+
+/// Duration the boot banner is shown, in milliseconds.
+pub const BOOT_BANNER_MS: i64 = 3000;
+
+// ---------------------------------------------------------------------------
+// Optional runtime `.bdf` bitmap font (loaded from the SD card at boot)
+// ---------------------------------------------------------------------------
+
+/// SD path of the optional bitmap font file.
+pub const FONT_FILE_PATH: &str = "/FONT.BDF";
+/// Max size (bytes) of the `.bdf` text we are willing to load at boot.
+pub const MAX_FONT_FILE: usize = 8192;
+/// Capacity of the runtime font owned by the boot path.
+pub const FONT_BITMAP_CAP: usize = 4096;
+pub const FONT_SPAN_CAP: usize = 128;
+
+// ---------------------------------------------------------------------------
+// `.qgif` face format
+// ---------------------------------------------------------------------------
+
+/// Maximum frame buffer size we accept (128x64 => 1024 bytes, matching OLED).
+pub const MAX_FRAME_BYTES: usize = 128 * 64 / 8;

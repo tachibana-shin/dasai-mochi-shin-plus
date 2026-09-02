@@ -17,9 +17,13 @@
 //! ```
 //!
 //! Frame data is a 1bpp bitmap, row-major, `ceil(width/8) * height` bytes.
+//!
+//! This module also hosts the compile-time-embedded boot-intro animation bytes
+//! ([`assets`]).
 
-/// Maximum frame buffer size we accept (128x64 => 1024 bytes, matching OLED).
-pub const MAX_FRAME_BYTES: usize = 128 * 64 / 8;
+use crate::config;
+
+pub mod assets;
 
 /// Parsed header of a `.qgif`/`.qgif+` file.
 #[derive(Debug, Clone, Copy)]
@@ -76,7 +80,7 @@ impl QgifHeader {
         }
 
         let frame_bytes = ((width as usize + 7) / 8) * height as usize;
-        if frame_bytes == 0 || frame_bytes > MAX_FRAME_BYTES {
+        if frame_bytes == 0 || frame_bytes > config::MAX_FRAME_BYTES {
             return None;
         }
 

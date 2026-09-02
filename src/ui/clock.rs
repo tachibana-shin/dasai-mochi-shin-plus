@@ -8,12 +8,8 @@
 use esp_hal::delay::Delay;
 use esp_hal::time::Instant;
 
+use crate::config;
 use crate::drivers::screen::Display;
-
-/// Clock face geometry for the 128x64 panel.
-const CLOCK_CX: i16 = 64;
-const CLOCK_CY: i16 = 32;
-const CLOCK_R: i16 = 27;
 
 /// Approximate `sin(deg)` as a fixed-point integer scaled by 1024, using the
 /// Bhaskara I rational approximation (error < 0.003 — irrelevant on a 1bpp
@@ -42,23 +38,26 @@ fn cos_fp(deg: i32) -> i32 {
 fn hand_tip(len: i16, angle_deg: i32) -> (i16, i16) {
     let dx = (sin_fp(angle_deg) * len as i32) / 1024;
     let dy = (-cos_fp(angle_deg) * len as i32) / 1024;
-    (CLOCK_CX + dx as i16, CLOCK_CY + dy as i16)
+    (
+        config::CLOCK_CX + dx as i16,
+        config::CLOCK_CY + dy as i16,
+    )
 }
 
 /// Draw one hand from the hub to its tip.
 fn draw_hand(display: &mut Display, len: i16, angle_deg: i32, on: bool) {
     let (tx, ty) = hand_tip(len, angle_deg);
-    display.draw_line(CLOCK_CX, CLOCK_CY, tx, ty, on);
+    display.draw_line(config::CLOCK_CX, config::CLOCK_CY, tx, ty, on);
 }
 
 /// Draw the rim, the 12 hour ticks and the hub into a blanked buffer.
 fn draw_clock_face(display: &mut Display) {
     display.clear_buffer();
-    display.draw_circle(CLOCK_CX, CLOCK_CY, CLOCK_R, true);
+    display.draw_circle(config::CLOCK_CX, config::CLOCK_CY, config::CLOCK_R, true);
     for h in 0..12 {
         let ang = h * 30;
-        let (x1, y1) = hand_tip(CLOCK_R - 2, ang);
-        let (x2, y2) = hand_tip(CLOCK_R, ang);
+        let (x1, y1) = hand_tip(config::CLOCK_R - 2, ang);
+        let (x2, y2) = hand_tip(config::CLOCK_R, ang);
         display.draw_line(x1, y1, x2, y2, true);
     }
 }
@@ -79,7 +78,7 @@ pub fn show_clock(display: &mut Display, delay: &Delay, ms: u32) {
         draw_hand(display, 20, (mins * 6) as i32, true);
         // Second hand is a little longer and visibly ticks each second.
         draw_hand(display, 24, (secs * 6) as i32, true);
-        display.fill_circle(CLOCK_CX, CLOCK_CY, 2, true);
+        display.fill_circle(config::CLOCK_CX, config::CLOCK_CY, 2, true);
         let _ = display.flush();
 
         let step = 200u32.min(remaining as u32);

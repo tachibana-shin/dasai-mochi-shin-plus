@@ -6,9 +6,6 @@ use oled_i2c::{Font, TextOverflow};
 use crate::config;
 use crate::drivers::screen::Display;
 
-/// Duration the boot banner is shown, in milliseconds.
-const BOOT_BANNER_MS: i64 = 3000;
-
 /// Show the boot banner with the given font (a runtime `.bdf` font if one was
 /// loaded, otherwise the built-in 5x7 font), wrapping long lines instead of
 /// scrolling, then finish startup.
@@ -26,7 +23,7 @@ pub fn show_boot_banner(display: &mut Display, delay: &Delay, font: &Font<'_>) {
     display.draw_str_with(0, y, MSG, font);
     let _ = display.flush();
 
-    delay.delay_millis(BOOT_BANNER_MS as u32);
+    delay.delay_millis(config::BOOT_BANNER_MS as u32);
     let _ = display.clear_buffer();
     let _ = display.flush();
 }

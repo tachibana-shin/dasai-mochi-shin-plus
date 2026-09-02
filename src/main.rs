@@ -5,10 +5,9 @@
 #![no_std]
 #![no_main]
 
+mod app;
 mod config;
-mod dasai;
 mod drivers;
-mod intro;
 mod qgif;
 mod ui;
 
@@ -23,5 +22,5 @@ fn main() -> ! {
 
     println!("Dasai Mochi Shin - boot");
 
-    dasai::enter_loop(peripherals);
+    app::enter_loop(peripherals);
 }
