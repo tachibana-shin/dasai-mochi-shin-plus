@@ -11,9 +11,9 @@ use esp_println::println;
 
 use crate::drivers::screen;
 use crate::drivers::sd;
-use crate::qgif::assets::INTRO_QGIF;
+use crate::qgif::{assets::INTRO_QGIF, QgifHeader};
 use crate::ui::screens::boot;
-use crate::ui::{qgif, router};
+use crate::ui::router;
 
 /// Entry point: set up display + SD, then run Dasai Mochi forever.
 pub fn enter_loop(p: Peripherals) -> ! {
@@ -24,7 +24,7 @@ pub fn enter_loop(p: Peripherals) -> ! {
 
     // ---- Boot intro from firmware memory ----
     println!("Dasai Mochi Shin — Rust edition");
-    qgif::play_from_memory(&mut display, INTRO_QGIF, &delay);
+    QgifHeader::play_from_memory(&mut display, INTRO_QGIF, &delay);
 
     // ---- Boot banner (always shows, independent of the SD card) ----
     println!("boot banner");

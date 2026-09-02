@@ -13,8 +13,7 @@ use esp_hal::delay::Delay;
 
 use crate::drivers::screen::Display;
 use crate::drivers::sd::SdDriver;
-use crate::qgif::assets::INTRO_QGIF;
-use crate::ui::qgif;
+use crate::qgif::{assets::INTRO_QGIF, QgifHeader};
 use crate::ui::screens::face_player;
 
 /// The current on-screen screen. Add new screens (clock, settings, ...) here
@@ -35,7 +34,7 @@ pub fn run(display: &mut Display, delay: &Delay, driver: SdDriver) -> ! {
         None => {
             // SD unavailable / empty: fall back to the embedded intro forever.
             loop {
-                qgif::play_from_memory(display, INTRO_QGIF, delay);
+                QgifHeader::play_from_memory(display, INTRO_QGIF, delay);
                 delay.delay_millis(1000);
             }
         }
