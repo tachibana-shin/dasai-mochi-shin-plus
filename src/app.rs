@@ -12,7 +12,8 @@ use esp_println::println;
 use crate::drivers::screen;
 use crate::drivers::sd;
 use crate::qgif::assets::INTRO_QGIF;
-use crate::ui::{boot, face_player, qgif};
+use crate::ui::screens::boot;
+use crate::ui::{qgif, router};
 
 /// Entry point: set up display + SD, then run Dasai Mochi forever.
 pub fn enter_loop(p: Peripherals) -> ! {
@@ -29,8 +30,8 @@ pub fn enter_loop(p: Peripherals) -> ! {
     println!("boot banner");
     boot::show_boot_banner(&mut display, &delay, &oled_i2c::FONT_5X7);
 
-    // ---- SD card face playback ----
+    // ---- Router: SD face playback (plus upcoming screens) ----
     println!("initialising SD card...");
     let driver = sd::sd_gpios(p.SPI2, p.GPIO1, p.GPIO2, p.GPIO3, p.GPIO4);
-    face_player::run(&mut display, &delay, driver)
+    router::run(&mut display, &delay, driver)
 }
