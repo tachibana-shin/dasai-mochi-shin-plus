@@ -214,6 +214,10 @@ pub struct Oled<I: I2c> {
     /// Panel rotation: 0 = none, 1 = 90° CW, 2 = 180°, 3 = 270° CW,
     /// applied on the drawing APIs (the raw frame buffer stays physical).
     rotation: u8,
+    /// Hardware horizontal mirror (segment remap): `true` = `0xA1`.
+    flip_h: bool,
+    /// Hardware vertical mirror (COM scan direction): `true` = `0xC8`.
+    flip_v: bool,
 }
 
 impl<I: I2c> Oled<I> {
@@ -232,6 +236,8 @@ impl<I: I2c> Oled<I> {
             ellipsis: "...",
             font: &FONT_5X7,
             rotation: 0,
+            flip_h: true,
+            flip_v: true,
         };
         display.send_init()?;
         Ok(display)
@@ -272,6 +278,33 @@ impl<I: I2c> Oled<I> {
         self.rotation & 3
     }
 
+    /// Flip (mirror) the panel left↔right on the controller itself, using the
+    /// hardware **segment remap** register (`0xA1` remapped / `0xA0` normal).
+    /// A logical 180° rotation can be achieved by combining this with
+    /// [`Oled::flip_vertical`]. The state is stored so it survives a re-init.
+    pub fn flip_horizontal(&mut self, flip: bool) -> Result<(), I::Error> {
+        self.flip_h = flip;
+        self.cmd(if flip { 0xA1 } else { 0xA0 })
+    }
+
+    /// Flip (mirror) the panel top↔bottom on the controller itself, using the
+    /// hardware **COM output scan direction** register (`0xC8` remapped /
+    /// `0xC0` normal). The state is stored so it survives a re-init.
+    pub fn flip_vertical(&mut self, flip: bool) -> Result<(), I::Error> {
+        self.flip_v = flip;
+        self.cmd(if flip { 0xC8 } else { 0xC0 })
+    }
+
+    /// Whether the horizontal (segment remap) mirror is currently enabled.
+    pub fn flipped_horizontal(&self) -> bool {
+        self.flip_h
+    }
+
+    /// Whether the vertical (COM scan) mirror is currently enabled.
+    pub fn flipped_vertical(&self) -> bool {
+        self.flip_v
+    }
+
     /// Send one command byte (prefixed with the command control byte).
     fn cmd(&mut self, byte: u8) -> Result<(), I::Error> {
         self.i2c.write(self.address, &[CTRL_CMD, byte])
@@ -294,8 +327,10 @@ impl<I: I2c> Oled<I> {
         self.cmd(0x14)?; // Charge pump on
         self.cmd(0x20)?;
         self.cmd(0x02)?; // Page addressing mode
-        self.cmd(0xA1)?; // Segment remap (col 127 <-> SEG0)
-        self.cmd(0xC8)?; // COM output scan direction (remapped)
+        // Segment remap / COM scan direction set the horizontal/vertical
+        // hardware mirror. Use the (possibly flipped) driver state.
+        self.cmd(if self.flip_h { 0xA1 } else { 0xA0 })?;
+        self.cmd(if self.flip_v { 0xC8 } else { 0xC0 })?;
         self.cmd(0xDA)?;
         self.cmd(if self.config.height == 32 { 0x02 } else { 0x12 })?; // COM pins
         self.cmd(0x81)?;
@@ -1933,5 +1968,27 @@ ENDFONT
             }
         }
         assert!(row1_has, "wrap should draw a second row of glyphs");
+    }
+
+    #[test]
+    fn hardware_flip_state_tracks() {
+        let mut d = new_display();
+        // Boot state matches send_init (both mirrors enabled by default).
+        assert!(d.flipped_horizontal());
+        assert!(d.flipped_vertical());
+
+        d.flip_horizontal(false).expect("flip");
+        assert!(!d.flipped_horizontal());
+        assert!(d.flipped_vertical());
+
+        d.flip_vertical(false).expect("flip");
+        assert!(!d.flipped_horizontal());
+        assert!(!d.flipped_vertical());
+
+        // Toggling back re-enables both.
+        d.flip_horizontal(true).expect("flip");
+        d.flip_vertical(true).expect("flip");
+        assert!(d.flipped_horizontal());
+        assert!(d.flipped_vertical());
     }
 }

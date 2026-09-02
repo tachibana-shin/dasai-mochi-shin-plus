@@ -127,6 +127,24 @@ display.draw_str_with(x, y, "Hi", &font.font());
 * `draw_frame(&buf)` — push a caller-supplied page-major buffer.
 * `clear()` / `clear_buffer()` / `flush()` — buffer management.
 
+## Orientation: rotation, flip, invert
+
+Three independent, orthogonal controls change how the panel is oriented:
+
+* **Rotation** — `set_rotation(0..=3)` (GFX `setRotation`) rotates the
+  *drawing APIs* 0° / 90° / 180° / 270° by remapping logical coordinates
+  before they touch the frame buffer. `get_rotation()` reads it back, and
+  `width()` / `height()` are swapped for the 90°/270° cases.
+* **Hardware flip (mirror)** — `flip_horizontal(bool)` and
+  `flip_vertical(bool)` mirror the panel on the *controller itself* using the
+  SSD1306/SH1106 **segment remap** (`0xA1`/`0xA0`) and **COM output scan
+  direction** (`0xC8`/`0xC0`) registers. This is useful to compensate for how
+  a panel is physically mounted, and a 180° rotation can be done purely on the
+  controller by enabling both. The state is remembered and reapplied by a
+  re-init. Getters: `flipped_horizontal()` / `flipped_vertical()`.
+* **Invert** — `invert(bool)` flips the pixel polarity (dark ↔ bright) via the
+  `0xA7`/`0xA6` registers.
+
 ## Supported panels
 
 | Config                | Controller | Resolution | Notes                  |
