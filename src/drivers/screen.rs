@@ -24,13 +24,13 @@ pub type Display = Oled<I2c<'static, Blocking>>;
 pub fn init(i2c0: I2C0<'static>, sda: GPIO20<'static>, scl: GPIO21<'static>) -> Display {
     let i2c = I2c::new(
         i2c0,
-        I2cConfig::default().with_frequency(Rate::from_khz(config::SCREEN_I2C_FREQ_KHZ)),
+        I2cConfig::default().with_frequency(Rate::from_khz(config::DISPLAY.i2c_freq_khz)),
     )
     .expect("I2C init failed")
     .with_sda(sda)
     .with_scl(scl);
 
-    Oled::new(i2c, config::SH1106_I2C_ADDR, config::SCREEN_CONFIG)
+    Oled::new(i2c, config::DISPLAY.i2c_addr, config::SCREEN_CONFIG)
         .expect("OLED init failed")
 }
 

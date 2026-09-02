@@ -3,90 +3,175 @@
 //! Pin assignments mirror the original C++ project (`config.cpp` / `config.h`),
 //! so the physical wiring stays identical between the two firmwares.
 //!
-//! Several pins (audio, tap sensor) are for hardware that the current firmware
-//! doesn't drive yet — they are kept here as the canonical wiring contract.
+//! # Organisation
+//!
+//! Related values are grouped into small `const` instance structs
+//! (`PINS`, `TAP`, `BRIGHT`, ...). This is deliberately *not* a bag of flat
+//! constants: these structs are also the natural place to hang runtime
+//! tunables once *WebUSB* configuration (e.g. remapping pins, adjusting
+//! timings) lands — a struct holding values can later be promoted to a
+//! `static` loaded from flash without touching every call site. Only the
+//! values that must exist at **compile time** (array sizes, screen geometry
+//! backing frame buffers) stay as plain `const`s.
+//!
+//! Several pins (audio) are for hardware the current firmware doesn't drive
+//! yet — they are kept here as the canonical wiring contract.
+
 #![allow(dead_code)]
 
-use oled_i2c::{OledConfig, OledKind};
+use oled_i2c::OledConfig;
 
-/// Display (SH1106 OLED 128x64) I2C pins.
-pub const PIN_SCREEN_SDA: u8 = 20;
-pub const PIN_SCREEN_SCL: u8 = 21;
+// ---------------------------------------------------------------------------
+// IO pin wiring (all adjustable later via WebUSB -> PINS instance)
+// ---------------------------------------------------------------------------
 
-/// Tap/touch sensor input.
-pub const PIN_SENSOR_TAP: u8 = 10;
+/// All GPIO wiring. A single instance so future WebUSB remapping can swap a
+/// whole field without changing call sites.
+pub struct Pins {
+    /// SH1106 OLED I2C data.
+    pub screen_sda: u8,
+    /// SH1106 OLED I2C clock.
+    pub screen_scl: u8,
+    /// Tap/touch sensor input (TTP233).
+    pub tap: u8,
+    /// SD card chip-select.
+    pub sd_cs: u8,
+    /// SD card SPI MOSI.
+    pub sd_mosi: u8,
+    /// SD card SPI clock.
+    pub sd_clk: u8,
+    /// SD card SPI MISO.
+    pub sd_miso: u8,
+    /// I2S audio LRC (reserved).
+    pub audio_lrc: u8,
+    /// I2S audio data (reserved).
+    pub audio_din: u8,
+    /// I2S audio bit clock (reserved).
+    pub audio_bclk: u8,
+}
 
-/// SD card (SPI) pins.
-pub const PIN_SD_CS: u8 = 4;
-pub const PIN_SD_MOSI: u8 = 3;
-pub const PIN_SD_CLK: u8 = 2;
-pub const PIN_SD_MISO: u8 = 1;
+/// The board wiring contract (matches `config.cpp` of the original project).
+pub const PINS: Pins = Pins {
+    screen_sda: 20,
+    screen_scl: 21,
+    tap: 10,
+    sd_cs: 4,
+    sd_mosi: 3,
+    sd_clk: 2,
+    sd_miso: 1,
+    audio_lrc: 5,
+    audio_din: 7,
+    audio_bclk: 8,
+};
 
-/// I2S audio pins (reserved for later use).
-pub const PIN_AUDIO_LRC: u8 = 5;
-pub const PIN_AUDIO_DIN: u8 = 7;
-pub const PIN_AUDIO_BCLK: u8 = 8;
+// ---------------------------------------------------------------------------
+// Display (SH1106 OLED 128x64)
+// ---------------------------------------------------------------------------
 
-/// Home path on the SD card where Dasai Mochi data lives.
-pub const HOME_PATH: &str = "/DasaiMochi";
+/// Display tuning that may later become WebUSB-adjustable.
+pub struct Display {
+    /// I2C bus frequency in kHz (400 = fast mode).
+    pub i2c_freq_khz: u32,
+    /// Default contrast / brightness (0..=255).
+    pub default_contrast: u8,
+    /// I2C slave address of the SH1106.
+    pub i2c_addr: u8,
+}
 
-/// Sub-folder (relative to `HOME_PATH`) containing the `.qgif` face files.
-pub const MOCHI_DIR: &str = "/DasaiMochi/Mochi";
+pub const DISPLAY: Display = Display {
+    i2c_freq_khz: 400,
+    default_contrast: 150,
+    i2c_addr: 0x3C,
+};
 
-/// Display physical size.
-pub const SCREEN_WIDTH: u16 = 128;
-pub const SCREEN_HEIGHT: u16 = 64;
+/// Full OLED panel configuration — the **single source of truth** for the
+/// display. All panel geometry (width, height, frame-buffer size) is derived
+/// from this one value via its `const` accessors, so the size is never typed
+/// out twice. Swap a different panel here and every screen helper follows.
+pub const SCREEN_CONFIG: OledConfig = OledConfig::sh1106_128x64()
+    .with_contrast(DISPLAY.default_contrast);
 
-/// I2C clock speed for the display bus (400 kHz fast-mode).
-pub const SCREEN_I2C_FREQ_KHZ: u32 = 400;
-/// Default screen brightness / contrast (0..=255).
-pub const SCREEN_DEFAULT_CONTRAST: u8 = 150;
+/// Physical panel size (derived from [`SCREEN_CONFIG`]).
+pub const SCREEN_WIDTH: u16 = SCREEN_CONFIG.width() as u16;
+pub const SCREEN_HEIGHT: u16 = SCREEN_CONFIG.height() as u16;
 
-/// Default I2C address for the SH1106 OLED.
-pub const SH1106_I2C_ADDR: u8 = 0x3C;
-
-/// Full OLED panel configuration, built with the `OledConfig` type.
-///
-/// Driving the screen config from here keeps all display tuning in one place
-/// while letting the driver (`crate::drivers::screen`) stay a thin init + util
-/// layer. `OledConfig::sh1106_128x64()` is a `const fn`, so this is usable as
-/// a `const`.
-pub const SCREEN_CONFIG: OledConfig = OledConfig::new(OledKind::Sh1106, 128, 64)
-    .with_contrast(SCREEN_DEFAULT_CONTRAST);
-
-/// One frame buffer page-major layout: 128 columns x 64 rows / 8 = 1024 bytes.
+/// One frame buffer page-major layout — e.g. 128x64 / 8 = 1024 bytes.
+/// Derived from [`SCREEN_CONFIG`] so it can never drift from the panel size.
 pub const SCREEN_FRAME_BUF_SIZE: usize = SCREEN_CONFIG.frame_buf_size();
 
-/// Dasai Mochi playback settings (mirrors the original defaults).
-pub const MOCHI_SPEED_DIVISOR: u32 = 1;
-pub const MOCHI_NEGATIVE: bool = false;
-/// How often (ms) the clock is shown between faces.
-pub const MOCHI_CLOCK_INTERVAL: u64 = 180_000; // 3 minutes
-/// How long (ms) the clock stays on each time.
-pub const MOCHI_CLOCK_DURATION: u64 = 5_000; // 5 seconds
+// ---------------------------------------------------------------------------
+// SD card
+// ---------------------------------------------------------------------------
 
-/// SPI frequency for the SD card (400 kHz is the safe init speed).
-pub const SD_SPI_FREQ_KHZ: u32 = 400;
+/// SD/SPI tuning.
+pub struct Sd {
+    /// SPI clock frequency in kHz (400 kHz is the safe init speed).
+    pub spi_freq_khz: u32,
+}
+
+pub const SD: Sd = Sd { spi_freq_khz: 400 };
+
+// ---------------------------------------------------------------------------
+// Media paths
+// ---------------------------------------------------------------------------
+
+/// Root folder on the SD card where Dasai Mochi data lives.
+pub const HOME_PATH: &str = "/DasaiMochi";
+
+/// Sub-folder (relative to [`HOME_PATH`]) containing the `.qgif` face files.
+pub const MOCHI_DIR: &str = "/DasaiMochi/Mochi";
+
+// ---------------------------------------------------------------------------
+// Mochi playback
+// ---------------------------------------------------------------------------
+
+/// Dasai Mochi playback behaviour (mirrors the original defaults).
+pub struct Playback {
+    pub speed_divisor: u32,
+    pub negative: bool,
+    /// How often (ms) the clock is shown between faces.
+    pub clock_interval_ms: u64,
+    /// How long (ms) the clock stays on each time.
+    pub clock_duration_ms: u64,
+}
+
+pub const PLAYBACK: Playback = Playback {
+    speed_divisor: 1,
+    negative: false,
+    clock_interval_ms: 180_000,  // 3 minutes
+    clock_duration_ms: 5_000,    // 5 seconds
+};
 
 // ---------------------------------------------------------------------------
 // Analog clock placeholder (shown between faces)
 // ---------------------------------------------------------------------------
 
-/// Clock face hub / centre in panel pixels.
-pub const CLOCK_CX: i16 = 64;
-pub const CLOCK_CY: i16 = 32;
-/// Clock face rim radius in pixels.
-pub const CLOCK_R: i16 = 27;
+/// Clock face layout in panel pixels.
+pub struct ClockFace {
+    /// Hub / centre column.
+    pub cx: i16,
+    /// Hub / centre row.
+    pub cy: i16,
+    /// Rim radius.
+    pub r: i16,
+}
+
+pub const CLOCK: ClockFace = ClockFace { cx: 64, cy: 32, r: 27 };
 
 // ---------------------------------------------------------------------------
-// Boot banner
+// Boot
 // ---------------------------------------------------------------------------
 
-/// Duration the boot banner is shown, in milliseconds.
-pub const BOOT_BANNER_MS: i64 = 3000;
+/// Boot sequence behaviour.
+pub struct Boot {
+    /// Duration the boot banner is shown, in ms.
+    pub banner_ms: i64,
+}
+
+pub const BOOT: Boot = Boot { banner_ms: 3000 };
 
 // ---------------------------------------------------------------------------
-// `.qgif` face format
+// `.qgif` face format (array sizes are compile-time)
 // ---------------------------------------------------------------------------
 
 /// Maximum frame buffer size we accept (128x64 => 1024 bytes, matching OLED).
@@ -100,38 +185,65 @@ pub const MAX_FRAME_COUNT: usize = 512;
 // Tap sensor (TTP233 capacitive touch) + gesture recognition
 // ---------------------------------------------------------------------------
 
-/// Tap sensor polarity: `true` = touch pulls the pin HIGH (active-high).
-/// TTP233/TTP223 output is active-high by default, so a touch reads HIGH.
-pub const TAP_ACTIVE_HIGH: bool = true;
+/// Tap sensor + gesture tuning.
+pub struct Tap {
+    /// `true` = touch pulls the pin HIGH (active-high). TTP233/TTP223 output
+    /// is active-high by default, so a touch reads HIGH.
+    pub active_high: bool,
+    /// Debounce window (ms): ignore shorter electrical glitches on the pin.
+    pub debounce_ms: u32,
+    /// Max gap (ms) between separate taps for them to count as multi-tap.
+    pub multitap_window_ms: u32,
+    /// Held past this (ms) the touch counts as a long-press instead of a tap.
+    pub press_ms: u32,
+    /// Polling cadence (ms) of the lightweight sensor task in the 2-task
+    /// design. Small enough to stay responsive, coarse enough not to hog the
+    /// single core.
+    pub poll_ms: u32,
+}
 
-/// Debounce window (ms): ignore shorter electrical glitches on the pin.
-pub const TAP_DEBOUNCE_MS: u32 = 25;
-/// Max gap (ms) between separate taps for them to count as multi-tap.
-pub const TAP_MULTITAP_WINDOW_MS: u32 = 300;
-/// Held past this (ms) the touch counts as a long-press instead of a tap.
-pub const TAP_PRESS_MS: u32 = 600;
-/// Polling cadence (ms) of the lightweight sensor task in the 2-task design.
-/// Small enough to stay responsive, coarse enough not to hog the single core.
-pub const TAP_POLL_MS: u32 = 5;
+pub const TAP: Tap = Tap {
+    active_high: true,
+    debounce_ms: 25,
+    multitap_window_ms: 300,
+    press_ms: 600,
+    poll_ms: 5,
+};
 
 // ---------------------------------------------------------------------------
 // Brightness (0..=255)
 // ---------------------------------------------------------------------------
 
-/// Minimum usable brightness value.
-pub const BRIGHT_MIN: u8 = 10;
-/// Maximum brightness value (panel contrast).
-pub const BRIGHT_MAX: u8 = 255;
-/// How far one tap moves the brightness while editing (per-unit 0..=255).
-pub const BRIGHT_STEP: u8 = 1;
-/// How often auto-repeat bumps the brightness while the sensor is held.
-pub const BRIGHT_REPEAT_MS: u32 = 50;
-/// Default brightness if nothing is stored yet (must be within MIN..=MAX).
-pub const BRIGHT_DEFAULT: u8 = 150;
+/// Brightness limits + step/auto-repeat tuning.
+pub struct Brightness {
+    /// Minimum usable brightness value.
+    pub min: u8,
+    /// Maximum brightness value (panel contrast).
+    pub max: u8,
+    /// How far one tap moves the brightness while editing (per-unit 0..=255).
+    pub step: u8,
+    /// How often auto-repeat bumps the brightness while the sensor is held.
+    pub repeat_ms: u32,
+    /// Default brightness if nothing is stored yet (within `min..=max`).
+    pub default: u8,
+}
+
+pub const BRIGHT: Brightness = Brightness {
+    min: 10,
+    max: 255,
+    step: 1,
+    repeat_ms: 50,
+    default: 150,
+};
 
 // ---------------------------------------------------------------------------
 // Settings screen
 // ---------------------------------------------------------------------------
 
-/// Sense delay per loop tick (ms) while waiting for gestures on any screen.
-pub const SETTINGS_POLL_MS: u32 = 20;
+/// Settings / listview behaviour.
+pub struct Settings {
+    /// Sense delay per loop tick (ms) while waiting for gestures on any screen.
+    pub poll_ms: u32,
+}
+
+pub const SETTINGS: Settings = Settings { poll_ms: 20 };

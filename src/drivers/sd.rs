@@ -86,7 +86,7 @@ pub fn new(driver: SdDriver) -> Option<Sd> {
     let spi = Spi::new(
         driver.spi2,
         SpiConfig::default()
-            .with_frequency(Rate::from_khz(config::SD_SPI_FREQ_KHZ))
+            .with_frequency(Rate::from_khz(config::SD.spi_freq_khz))
             .with_mode(SpiMode::_0),
     )
     .ok()?

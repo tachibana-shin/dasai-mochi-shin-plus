@@ -131,13 +131,13 @@ impl Player {
     }
 }
 
-/// Wait `ms` milliseconds in `SETTINGS_POLL_MS` steps, checking the gesture
+/// Wait `ms` milliseconds in `config::SETTINGS.poll_ms` steps, checking the gesture
 /// channel throughout, and return the first gesture that completes (or `None`).
 /// Yields to the executor after each step so the sensor task can keep polling.
 async fn delay_poll(tap: &'static TapChannel, ms: u32) -> Option<Gesture> {
     let mut remaining = ms;
     while remaining > 0 {
-        let step = config::SETTINGS_POLL_MS.min(remaining);
+        let step = config::SETTINGS.poll_ms.min(remaining);
         embassy_time::Timer::after_millis(step as u64).await;
         remaining -= step;
         if let Some(g) = tap::try_tap(tap) {
@@ -151,7 +151,7 @@ async fn delay_poll(tap: &'static TapChannel, ms: u32) -> Option<Gesture> {
 async fn delay_ms(_tap: &'static TapChannel, ms: u32) {
     let mut remaining = ms;
     while remaining > 0 {
-        let step = config::SETTINGS_POLL_MS.min(remaining);
+        let step = config::SETTINGS.poll_ms.min(remaining);
         embassy_time::Timer::after_millis(step as u64).await;
         remaining -= step;
     }

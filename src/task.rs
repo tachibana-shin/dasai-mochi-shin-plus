@@ -26,10 +26,10 @@ pub fn tap_channel() -> &'static TapChannel {
 
 /// The lightweight sensor task.
 ///
-/// Polls the TTP233 every [`config::TAP_POLL_MS`] and pushes completed
+/// Polls the TTP233 every [`config::TAP.poll_ms`] and pushes completed
 /// gestures onto [`TAP_CHANNEL`]. While the touch is held past the press
 /// threshold it also publishes repeated [`Gesture::Press`] events every
-/// [`config::BRIGHT_REPEAT_MS`], which the settings screen uses for
+/// [`config::BRIGHT.repeat_ms`], which the settings screen uses for
 /// "hold to auto-increase". Never blocks; it just samples, debounces and
 /// publishes, then yields back to the executor.
 #[embassy_executor::task]
@@ -42,7 +42,7 @@ async fn tap_task(mut tap: TapInput) -> ! {
     loop {
         // Yield first so the display task can run; keeps the sensor hot without
         // hogging the single core.
-        embassy_time::Timer::after_millis(config::TAP_POLL_MS as u64).await;
+        embassy_time::Timer::after_millis(config::TAP.poll_ms as u64).await;
         let now = EspInstant::now();
 
         if let Some(gesture) = tap.poll(now) {
@@ -58,7 +58,7 @@ async fn tap_task(mut tap: TapInput) -> ! {
         if !tap.is_held() {
             pressing = false;
         } else if pressing
-            && now - repeat_at >= Duration::from_millis(config::BRIGHT_REPEAT_MS as u64)
+            && now - repeat_at >= Duration::from_millis(config::BRIGHT.repeat_ms as u64)
         {
             repeat_at = now;
             let _ = TAP_CHANNEL.try_send(Gesture::Press);

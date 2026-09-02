@@ -52,14 +52,14 @@ pub fn load_brightness() -> u8 {
     // bounds (verified offset far below the flash top on 2 MB / 4 MB modules).
     let ok = unsafe { ll::spiflash_read(STORAGE_OFFSET, raw.as_mut_ptr(), STORAGE_LEN as u32) }.is_ok();
     if !ok {
-        return config::BRIGHT_DEFAULT;
+        return config::BRIGHT.default;
     }
     let bytes = unsafe { raw_bytes(&raw) };
     let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     if magic != MAGIC {
-        return config::BRIGHT_DEFAULT;
+        return config::BRIGHT.default;
     }
-    bytes[4].clamp(config::BRIGHT_MIN, config::BRIGHT_MAX)
+    bytes[4].clamp(config::BRIGHT.min, config::BRIGHT.max)
 }
 
 /// Persist the brightness value across reboots (erases + rewrites the sector).

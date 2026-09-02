@@ -71,7 +71,7 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
             },
             // An analog clock interlude between faces.
             Screen::Clock => {
-                clock::show_clock(display, crate::config::MOCHI_CLOCK_DURATION as u32, tap).await
+                clock::show_clock(display, crate::config::PLAYBACK.clock_duration_ms as u32, tap).await
             }
             Screen::Settings => {
                 settings::show(display, tap, &mut brightness).await;

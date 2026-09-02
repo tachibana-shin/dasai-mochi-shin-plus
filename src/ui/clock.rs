@@ -40,25 +40,25 @@ fn hand_tip(len: i16, angle_deg: i32) -> (i16, i16) {
     let dx = (sin_fp(angle_deg) * len as i32) / 1024;
     let dy = (-cos_fp(angle_deg) * len as i32) / 1024;
     (
-        config::CLOCK_CX + dx as i16,
-        config::CLOCK_CY + dy as i16,
+        config::CLOCK.cx + dx as i16,
+        config::CLOCK.cy + dy as i16,
     )
 }
 
 /// Draw one hand from the hub to its tip.
 fn draw_hand(display: &mut Display, len: i16, angle_deg: i32, on: bool) {
     let (tx, ty) = hand_tip(len, angle_deg);
-    display.draw_line(config::CLOCK_CX, config::CLOCK_CY, tx, ty, on);
+    display.draw_line(config::CLOCK.cx, config::CLOCK.cy, tx, ty, on);
 }
 
 /// Draw the rim, the 12 hour ticks and the hub into a blanked buffer.
 fn draw_clock_face(display: &mut Display) {
     display.clear_buffer();
-    display.draw_circle(config::CLOCK_CX, config::CLOCK_CY, config::CLOCK_R, true);
+    display.draw_circle(config::CLOCK.cx, config::CLOCK.cy, config::CLOCK.r, true);
     for h in 0..12 {
         let ang = h * 30;
-        let (x1, y1) = hand_tip(config::CLOCK_R - 2, ang);
-        let (x2, y2) = hand_tip(config::CLOCK_R, ang);
+        let (x1, y1) = hand_tip(config::CLOCK.r - 2, ang);
+        let (x2, y2) = hand_tip(config::CLOCK.r, ang);
         display.draw_line(x1, y1, x2, y2, true);
     }
 }
@@ -80,7 +80,7 @@ pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel
         draw_hand(display, 20, (mins * 6) as i32, true);
         // Second hand is a little longer and visibly ticks each second.
         draw_hand(display, 24, (secs * 6) as i32, true);
-        display.fill_circle(config::CLOCK_CX, config::CLOCK_CY, 2, true);
+        display.fill_circle(config::CLOCK.cx, config::CLOCK.cy, 2, true);
         let _ = display.flush();
 
         let step = 200u32.min(remaining as u32);

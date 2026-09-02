@@ -29,7 +29,7 @@ pub enum Gesture {
     DoubleTap,
     /// Three quick touches in the multi-tap window.
     TripleTap,
-    /// A touch held past [`config::TAP_PRESS_MS`].
+    /// A touch held past [`config::TAP.press_ms`].
     Press,
 }
 
@@ -57,7 +57,7 @@ pub struct TapInput {
 }
 
 impl TapInput {
-    /// Attach to the sensor pin. Uses [`config::TAP_ACTIVE_HIGH`] (TTP233
+    /// Attach to the sensor pin. Uses [`config::TAP.active_high`] (TTP233
     /// default: a touch reads HIGH) and pulls the pin down so a floating line
     /// reads as "not touched".
     pub fn new(pin: impl InputPin + 'static) -> Self {
@@ -78,7 +78,7 @@ impl TapInput {
 
     /// The raw (un-debounced) pin level as a `touch` boolean.
     fn raw_touch(&self) -> bool {
-        if config::TAP_ACTIVE_HIGH {
+        if config::TAP.active_high {
             self.input.is_high()
         } else {
             self.input.is_low()
@@ -102,8 +102,8 @@ impl TapInput {
         let falling = !touch && self.prev_touch;
         self.prev_touch = touch;
 
-        let multi_ms = Duration::from_millis(config::TAP_MULTITAP_WINDOW_MS as u64);
-        let press_ms = Duration::from_millis(config::TAP_PRESS_MS as u64);
+        let multi_ms = Duration::from_millis(config::TAP.multitap_window_ms as u64);
+        let press_ms = Duration::from_millis(config::TAP.press_ms as u64);
 
         // Rising edge: a new touch begins.
         if rising {
@@ -146,9 +146,9 @@ impl TapInput {
     }
 
     /// Debounce the raw level into [`TapInput::touched`] once it has been
-    /// stable for [`config::TAP_DEBOUNCE_MS`].
+    /// stable for [`config::TAP.debounce_ms`].
     fn debounce(&mut self, now: Instant, raw: bool) {
-        let debounce_ms = Duration::from_millis(config::TAP_DEBOUNCE_MS as u64);
+        let debounce_ms = Duration::from_millis(config::TAP.debounce_ms as u64);
         if raw != self.touched {
             if !self.changing {
                 self.changing = true;

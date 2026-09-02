@@ -138,10 +138,10 @@ async fn edit_brightness(display: &mut screen::Display, tap: &'static TapChannel
 
 /// Advance the brightness one step, wrapping MAX→MIN.
 fn bump(v: u8) -> u8 {
-    if v >= config::BRIGHT_MAX {
-        config::BRIGHT_MIN
+    if v >= config::BRIGHT.max {
+        config::BRIGHT.min
     } else {
-        v + config::BRIGHT_STEP
+        v + config::BRIGHT.step
     }
 }
 

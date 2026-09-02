@@ -52,7 +52,7 @@ async fn show_boot_banner(display: &mut Display, font: &Font<'_>) {
     display.draw_str_with(0, y, MSG, font);
     let _ = display.flush();
 
-    embassy_time::Timer::after_millis(config::BOOT_BANNER_MS as u64).await;
+    embassy_time::Timer::after_millis(config::BOOT.banner_ms as u64).await;
     let _ = display.clear_buffer();
     let _ = display.flush();
 }
