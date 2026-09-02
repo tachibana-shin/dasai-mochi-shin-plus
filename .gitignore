@@ -4,3 +4,9 @@
 # (that history lives in crates/oled-i2c/.git). If you need to build the
 # firmware from a fresh clone, check out oled-i2c into crates/oled-i2c first.
 crates/oled-i2c/
+
+# sdmmc-fs is a standalone Cargo workspace (empty [workspace]) whose build
+# artifacts are tracked by the parent firmware. Ignore its generated lockfile
+# and build directory (the source files ARE committed with the parent).
+crates/sdmmc-fs/Cargo.lock
+crates/sdmmc-fs/target

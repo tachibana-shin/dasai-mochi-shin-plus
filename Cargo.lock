@@ -233,6 +233,7 @@ dependencies = [
  "esp-rtos",
  "heapless 0.8.0",
  "oled-i2c",
+ "sdmmc-fs",
  "smoltcp",
 ]
 
@@ -1251,6 +1252,14 @@ name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
+
+[[package]]
+name = "sdmmc-fs"
+version = "0.1.0"
+dependencies = [
+ "embedded-sdmmc",
+ "heapless 0.8.0",
+]
 
 [[package]]
 name = "serde"

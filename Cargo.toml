@@ -6,10 +6,11 @@ edition = "2021"
 description = "Dasai Mochi Shin - ESP32-C3 firmware (Rust rewrite)"
 
 [workspace]
-# oled-i2c is a standalone workspace with its own Cargo.lock; it is deliberately
-# excluded here (not a member) and pulled in via the path dependency below.
+# oled-i2c and sdmmc-fs are standalone workspaces with their own Cargo.lock;
+# they are deliberately excluded here (not members) and pulled in via the path
+# dependencies below.
 members = []
-exclude = ["crates/oled-i2c"]
+exclude = ["crates/oled-i2c", "crates/sdmmc-fs"]
 resolver = "2"
 
 [dependencies]
@@ -37,3 +38,6 @@ heapless = "0.8"
 
 # Shared I2C OLED display driver (SSD1306 / SH1106) as a local crate
 oled-i2c = { path = "crates/oled-i2c" }
+
+# Generic, path-based FAT filesystem convenience layer over embedded-sdmmc
+sdmmc-fs = { path = "crates/sdmmc-fs" }

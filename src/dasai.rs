@@ -277,7 +277,7 @@ fn show_boot_banner(display: &mut Display, delay: &Delay, font: &Font<'_>) {
 /// coexist with `&mut Display` without fighting the borrow checker.
 fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) -> ! {
     // Initialise the SD card once.
-    let sd = match sd::Sd::new(driver) {
+    let sd = match sd::new(driver) {
         Some(s) => s,
         None => {
             println!("SD: init failed; looping intro");
