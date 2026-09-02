@@ -2,3 +2,4 @@
 
 pub mod clock;
 pub mod face_player;
+pub mod settings;

@@ -1,15 +1,16 @@
 //! Analog clock screen, shown as an interlude between played faces.
 //!
-//! The board has no RTC, so the hands tick with **uptime** (`Instant` counts
-//! since boot). This showcases the `oled-i2c` shape API (`draw_circle` /
+//! The board has no RTC, so the hands tick with **uptime** (`esp_hal::time::Instant`
+//! counts since boot). This showcases the `oled-i2c` shape API (`draw_circle` /
 //! `draw_line` / `fill_circle`) instead of a blank screen, animating once a
 //! second like a real clock. The router enters this screen after each face.
 
-use esp_hal::delay::Delay;
-use esp_hal::time::Instant;
+use esp_hal::time::Instant as EspInstant;
 
 use crate::config;
 use crate::drivers::screen::Display;
+use crate::drivers::tap::{self, Gesture, TapChannel};
+use crate::router::Screen;
 
 /// Approximate `sin(deg)` as a fixed-point integer scaled by 1024, using the
 /// Bhaskara I rational approximation (error < 0.003 — irrelevant on a 1bpp
@@ -62,12 +63,13 @@ fn draw_clock_face(display: &mut Display) {
     }
 }
 
-/// Show an analog clock for `ms` milliseconds.
-pub fn show_clock(display: &mut Display, delay: &Delay, ms: u32) {
+/// Show an analog clock for `ms` milliseconds, checking the gesture channel so
+/// a triple-tap can jump to settings early. Returns the next screen.
+pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
     display.clear_buffer();
     let mut remaining = ms as i64;
     while remaining > 0 {
-        let uptime_ms = Instant::now().duration_since_epoch().as_millis();
+        let uptime_ms = EspInstant::now().duration_since_epoch().as_millis();
         let secs = (uptime_ms / 1000) % 60;
         let mins = (uptime_ms / 60_000) % 60;
         let hours = (uptime_ms / 3_600_000) % 12;
@@ -82,7 +84,11 @@ pub fn show_clock(display: &mut Display, delay: &Delay, ms: u32) {
         let _ = display.flush();
 
         let step = 200u32.min(remaining as u32);
-        delay.delay_millis(step);
+        embassy_time::Timer::after_millis(step as u64).await;
+        if tap::try_tap(tap) == Some(Gesture::TripleTap) {
+            return Screen::Settings;
+        }
         remaining -= step as i64;
     }
+    Screen::FacePlayer
 }

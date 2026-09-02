@@ -95,3 +95,43 @@ pub const MAX_FRAME_BYTES: usize = 128 * 64 / 8;
 /// Maximum number of frames we accept in a single `.qgif`. Must match the
 /// size of `QgifHeader::delays` (512 => 1024 bytes of RAM on the stack).
 pub const MAX_FRAME_COUNT: usize = 512;
+
+// ---------------------------------------------------------------------------
+// Tap sensor (TTP233 capacitive touch) + gesture recognition
+// ---------------------------------------------------------------------------
+
+/// Tap sensor polarity: `true` = touch pulls the pin HIGH (active-high).
+/// TTP233/TTP223 output is active-high by default, so a touch reads HIGH.
+pub const TAP_ACTIVE_HIGH: bool = true;
+
+/// Debounce window (ms): ignore shorter electrical glitches on the pin.
+pub const TAP_DEBOUNCE_MS: u32 = 25;
+/// Max gap (ms) between separate taps for them to count as multi-tap.
+pub const TAP_MULTITAP_WINDOW_MS: u32 = 300;
+/// Held past this (ms) the touch counts as a long-press instead of a tap.
+pub const TAP_PRESS_MS: u32 = 600;
+/// Polling cadence (ms) of the lightweight sensor task in the 2-task design.
+/// Small enough to stay responsive, coarse enough not to hog the single core.
+pub const TAP_POLL_MS: u32 = 5;
+
+// ---------------------------------------------------------------------------
+// Brightness (0..=255)
+// ---------------------------------------------------------------------------
+
+/// Minimum usable brightness value.
+pub const BRIGHT_MIN: u8 = 10;
+/// Maximum brightness value (panel contrast).
+pub const BRIGHT_MAX: u8 = 255;
+/// How far one tap moves the brightness while editing (per-unit 0..=255).
+pub const BRIGHT_STEP: u8 = 1;
+/// How often auto-repeat bumps the brightness while the sensor is held.
+pub const BRIGHT_REPEAT_MS: u32 = 50;
+/// Default brightness if nothing is stored yet (must be within MIN..=MAX).
+pub const BRIGHT_DEFAULT: u8 = 150;
+
+// ---------------------------------------------------------------------------
+// Settings screen
+// ---------------------------------------------------------------------------
+
+/// Sense delay per loop tick (ms) while waiting for gestures on any screen.
+pub const SETTINGS_POLL_MS: u32 = 20;

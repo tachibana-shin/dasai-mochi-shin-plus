@@ -6,13 +6,17 @@
 //!   returns `None` only if the card is unusable/empty.
 //! - [`Player::step`] plays a single face and returns the [`Screen`] to switch
 //!   to next (an analog-clock interlude between faces).
+//!
+//! Gestures arrive via the shared tap [`TapChannel`] (fed by the lightweight
+//! sensor task); the async frame waits yield to that task so a triple-tap can
+//! interrupt a face and open settings.
 
-use esp_hal::delay::Delay;
 use esp_println::{print, println};
 
 use crate::config;
 use crate::drivers::screen;
 use crate::drivers::sd::{self, FacesInfo, Sd, SdDriver};
+use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::qgif::QgifHeader;
 use crate::router::Screen;
 
@@ -56,7 +60,11 @@ impl Player {
     ///
     /// `Sd` uses interior mutability (`&self` methods), so it coexists with the
     /// `&mut Display` borrow without fighting the borrow checker.
-    pub fn step(&mut self, display: &mut screen::Display, delay: &Delay) -> Screen {
+    pub async fn step(
+        &mut self,
+        display: &mut screen::Display,
+        tap: &'static TapChannel,
+    ) -> Screen {
         let fname = &self.info.faces[self.face_idx];
         print!("face[{}] \"{}\"", self.face_idx, fname.as_str());
 
@@ -65,7 +73,7 @@ impl Player {
             Ok(f) => f,
             Err(e) => {
                 println!(" open err: {:?}", e);
-                delay.delay_millis(1000);
+                delay_ms(tap, 1000).await;
                 self.face_idx = (self.face_idx + 1) % self.info.faces.len();
                 return Screen::FacePlayer;
             }
@@ -107,12 +115,44 @@ impl Player {
                 }
                 _ => break,
             }
-            delay.delay_millis(header.delays[fr] as u32);
+            // Wait the frame interval, checking the channel in small steps so a
+            // triple-tap can interrupt the face and open settings. The async
+            // wait yields to the sensor task throughout.
+            if delay_poll(tap, header.delays[fr] as u32).await == Some(Gesture::TripleTap) {
+                file.close();
+                return Screen::Settings;
+            }
         }
 
         file.close();
         // Hand off to the clock screen for an interlude before the next face.
         self.face_idx = (self.face_idx + 1) % self.info.faces.len();
         Screen::Clock
+    }
+}
+
+/// Wait `ms` milliseconds in `SETTINGS_POLL_MS` steps, checking the gesture
+/// channel throughout, and return the first gesture that completes (or `None`).
+/// Yields to the executor after each step so the sensor task can keep polling.
+async fn delay_poll(tap: &'static TapChannel, ms: u32) -> Option<Gesture> {
+    let mut remaining = ms;
+    while remaining > 0 {
+        let step = config::SETTINGS_POLL_MS.min(remaining);
+        embassy_time::Timer::after_millis(step as u64).await;
+        remaining -= step;
+        if let Some(g) = tap::try_tap(tap) {
+            return Some(g);
+        }
+    }
+    None
+}
+
+/// Just wait for `ms` milliseconds (no gesture handling).
+async fn delay_ms(_tap: &'static TapChannel, ms: u32) {
+    let mut remaining = ms;
+    while remaining > 0 {
+        let step = config::SETTINGS_POLL_MS.min(remaining);
+        embassy_time::Timer::after_millis(step as u64).await;
+        remaining -= step;
     }
 }

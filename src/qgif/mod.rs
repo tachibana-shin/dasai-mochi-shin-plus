@@ -26,7 +26,6 @@ use esp_println::println;
 
 use crate::config;
 use crate::drivers::screen::{draw_frame_centered, Display};
-
 pub mod assets;
 
 /// Parsed header of a `.qgif`/`.qgif+` file.
@@ -115,6 +114,7 @@ impl QgifHeader {
     /// This is the "decode + playback" side of a face file: it parses the
     /// header (via [`QgifHeader::parse`]), walks the frames and hands each
     /// decoded frame to the display layer ([`draw_frame_centered`]).
+    #[allow(dead_code)]
     pub fn play_from_memory(display: &mut Display, data: &[u8], delay: &Delay) {
         let mut read_at = |offset: u32, buf: &mut [u8]| -> usize {
             let start = offset as usize;
@@ -144,5 +144,52 @@ impl QgifHeader {
             draw_frame_centered(display, &buf[..fb], header.width, header.height);
             delay.delay_millis(header.delays[frame] as u32);
         }
+    }
+
+    /// Async variant of [`QgifHeader::play_from_memory`] used when the player
+    /// must stay responsive to the tap sensor (e.g. the "no SD card" fallback
+    /// that loops the embedded intro until the user triple-taps).
+    ///
+    /// Between frames the task yields to the executor (`Timer::after(...)`), so
+    /// the lightweight sensor task keeps polling; after each wait the sync
+    /// `interrupt` callback is invoked and, if it returns `true`, playback stops
+    /// early. Returns `true` if it was interrupted, `false` if it finished.
+    pub async fn play_from_memory_async(
+        display: &mut Display,
+        data: &[u8],
+        mut interrupt: impl FnMut() -> bool,
+    ) -> bool {
+        let mut read_at = |offset: u32, buf: &mut [u8]| -> usize {
+            let start = offset as usize;
+            if start >= data.len() {
+                return 0;
+            }
+            let end = (start + buf.len()).min(data.len());
+            buf[..end - start].copy_from_slice(&data[start..end]);
+            end - start
+        };
+
+        let Some(header) = QgifHeader::parse(&mut read_at) else {
+            println!("bad qgif header");
+            return false;
+        };
+
+        for frame in 0..header.frame_count as usize {
+            let fb = header.frame_bytes as usize;
+            let mut buf = [0u8; config::SCREEN_FRAME_BUF_SIZE];
+            if read_at(
+                header.data_offset + (frame as u32) * (header.frame_bytes as u32),
+                &mut buf[..fb],
+            ) != fb
+            {
+                break;
+            }
+            draw_frame_centered(display, &buf[..fb], header.width, header.height);
+            embassy_time::Timer::after_millis(header.delays[frame] as u64).await;
+            if interrupt() {
+                return true;
+            }
+        }
+        false
     }
 }
