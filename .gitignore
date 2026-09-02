@@ -1,1 +1,4 @@
 /target
+# oled-i2c has its own Cargo.lock (it is a standalone workspace); the parent
+# firmware keeps its root Cargo.lock, so ignore the nested one.
+crates/oled-i2c/Cargo.lock

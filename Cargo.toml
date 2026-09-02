@@ -6,7 +6,10 @@ edition = "2021"
 description = "Dasai Mochi Shin - ESP32-C3 firmware (Rust rewrite)"
 
 [workspace]
-members = ["crates/oled-i2c"]
+# oled-i2c is a standalone workspace with its own Cargo.lock; it is deliberately
+# excluded here (not a member) and pulled in via the path dependency below.
+members = []
+exclude = ["crates/oled-i2c"]
 resolver = "2"
 
 [dependencies]
