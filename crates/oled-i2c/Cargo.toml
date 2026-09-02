@@ -1,0 +1,14 @@
+[package]
+name = "oled-i2c"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal no_std I2C OLED driver for SSD1306 / SH1106 controllers"
+license = "MIT OR Apache-2.0"
+keywords = ["oled", "ssd1306", "sh1106", "i2c", "embedded"]
+categories = ["embedded", "hardware-support", "no-std"]
+
+[dependencies]
+embedded-hal = "1.0"
+
+[lib]
+# Always no_std: the driver only talks raw 1bpp page-major frame buffers.

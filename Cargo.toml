@@ -5,6 +5,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Dasai Mochi Shin - ESP32-C3 firmware (Rust rewrite)"
 
+[workspace]
+members = ["crates/oled-i2c"]
+resolver = "2"
+
 [dependencies]
 esp-backtrace = { version = "0.19", features = ["esp32c3", "panic-handler", "println"] }
 esp-println = { version = "0.17", default-features = false, features = ["esp32c3", "uart"] }
@@ -27,3 +31,6 @@ embedded-sdmmc = "0.9"
 embedded-hal-bus = "0.3"
 # Fixed-size collections (Vec, String) for no_std
 heapless = "0.8"
+
+# Shared I2C OLED display driver (SSD1306 / SH1106) as a local crate
+oled-i2c = { path = "crates/oled-i2c" }

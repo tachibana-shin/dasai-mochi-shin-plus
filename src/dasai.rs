@@ -9,17 +9,27 @@ use esp_hal::delay::Delay;
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::peripherals::Peripherals;
 use esp_hal::time::Rate;
+use esp_hal::Blocking;
 use esp_println::{print, println};
+use oled_i2c::{Oled, OledConfig};
 
 use crate::config;
 use crate::drivers::sd::{self, FacesInfo, SdDriver};
 use crate::intro::INTRO_QGIF;
 use crate::qgif::QgifHeader;
-use crate::drivers::sh1106::{Sh1106, FRAME_BUF_SIZE};
 
 // ---------------------------------------------------------------------------
 // Display helpers
 // ---------------------------------------------------------------------------
+
+/// The concrete display: SH1106 OLED, 128x64, on the board's I2C0 bus.
+type Display = Oled<I2c<'static, Blocking>>;
+
+/// Display physical size (the Dasai Mochi panel is 128x64).
+const SCREEN_WIDTH: usize = 128;
+const SCREEN_HEIGHT: usize = 64;
+/// One frame buffer page-major layout: 128 columns x 64 rows / 8 = 1024 bytes.
+const FRAME_BUF_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT / 8;
 
 /// Draw a 1bpp frame centred on the display, inverting polarity.
 ///
@@ -32,32 +42,32 @@ use crate::drivers::sh1106::{Sh1106, FRAME_BUF_SIZE};
 /// Because `mochiNegative = false` in the original config, stored bytes are
 /// inverted relative to the display, so we XOR `0xFF` every source byte first
 /// (same as the C++ `gifRenderFrame`).
-fn draw_centered(display: &mut Sh1106, data: &[u8], width: u16, height: u16) {
+fn draw_centered(display: &mut Display, data: &[u8], width: u16, height: u16) {
     let mut framebuf = [0u8; FRAME_BUF_SIZE];
     let row_bytes = (width as usize + 7) / 8;
 
     // Centre offsets.
-    let x_off = (128usize.saturating_sub(width as usize)) / 2;
-    let y_off = (64usize.saturating_sub(height as usize)) / 2;
+    let x_off = (SCREEN_WIDTH.saturating_sub(width as usize)) / 2;
+    let y_off = (SCREEN_HEIGHT.saturating_sub(height as usize)) / 2;
 
     for row in 0..height as usize {
         let dst_row = row + y_off;
         let page = dst_row / 8;
-        let row_bit = dst_row % 8; // bit index within the SH1106 page
+        let row_bit = dst_row % 8; // bit index within the OLED page
         for col in 0..width as usize {
             let src = data[row * row_bytes + col / 8];
             let on = ((src ^ 0xFF) >> (7 - (col % 8))) & 1;
             if on == 1 {
-                framebuf[page * 128 + x_off + col] |= 1 << row_bit;
+                framebuf[page * SCREEN_WIDTH + x_off + col] |= 1 << row_bit;
             }
         }
     }
 
-    display.draw_frame(&framebuf);
+    let _ = display.draw_frame(&framebuf);
 }
 
 /// Play a `.qgif` from a byte slice for one full cycle.
-fn play_from_memory(display: &mut Sh1106, data: &[u8], delay: &Delay) {
+fn play_from_memory(display: &mut Display, data: &[u8], delay: &Delay) {
     let mut read_at = |offset: u32, buf: &mut [u8]| -> usize {
         let start = offset as usize;
         if start >= data.len() {
@@ -89,8 +99,8 @@ fn play_from_memory(display: &mut Sh1106, data: &[u8], delay: &Delay) {
 }
 
 /// Show a black screen for `ms` milliseconds (clock placeholder).
-fn show_clock_placeholder(display: &mut Sh1106, delay: &Delay, ms: u32) {
-    display.clear();
+fn show_clock_placeholder(display: &mut Display, delay: &Delay, ms: u32) {
+    let _ = display.clear();
     delay.delay_millis(ms);
 }
 
@@ -112,8 +122,8 @@ fn face_path(info: &FacesInfo, fname: &str) -> heapless::String<48> {
 ///
 /// Initialises the SD card once, then plays faces in an infinite loop.
 /// The `Sd` driver uses interior mutability (`&self` methods), so it can
-/// coexist with `&mut Sh1106` without fighting the borrow checker.
-fn play_faces_from_sd(display: &mut Sh1106, delay: &Delay, driver: SdDriver) -> ! {
+/// coexist with `&mut Display` without fighting the borrow checker.
+fn play_faces_from_sd(display: &mut Display, delay: &Delay, driver: SdDriver) -> ! {
     // Initialise the SD card once.
     let sd = match sd::Sd::new(driver) {
         Some(s) => s,
@@ -218,8 +228,12 @@ pub fn enter_loop(p: Peripherals) -> ! {
     .with_sda(p.GPIO20)
     .with_scl(p.GPIO21);
 
-    let mut display = Sh1106::new(i2c, config::SH1106_I2C_ADDR);
-    display.set_contrast(150);
+    let mut display = Oled::new(
+        i2c,
+        config::SH1106_I2C_ADDR,
+        OledConfig::sh1106_128x64().with_contrast(150),
+    )
+    .expect("OLED init failed");
 
     // ---- Boot intro from firmware memory ----
     println!("Dasai Mochi Shin — Rust edition");
