@@ -246,13 +246,16 @@ fn try_load_font(sd: &sd::Sd) -> Option<BdfFont<FONT_BITMAP_CAP, FONT_SPAN_CAP>>
 }
 
 /// Duration of the scrolling boot banner, in milliseconds.
-const BOOT_BANNER_MS: i64 = 4000;
+/// Long enough for "Dasai Mochi by Tachibana Shin" to sweep across once.
+const BOOT_BANNER_MS: i64 = 6500;
 
-/// Show a short, horizontally scrolling ("marquee") boot banner with the given
-/// font (a runtime `.bdf` font if one was loaded, otherwise the built-in
-/// 5x7 font), demonstrating the driver's `scroll_text_frame` API.
+/// Show the scrolling ("marquee") boot banner with the given font (a runtime
+/// `.bdf` font if one was loaded, otherwise the built-in 5x7 font), enlarged
+/// two-fold, then finish startup.
 fn show_boot_banner(display: &mut Display, delay: &Delay, font: &Font<'_>) {
-    const MSG: &str = "DASAI MOCHI";
+    const MSG: &str = "Dasai Mochi by Tachibana Shin";
+    // Font at scale 1 reads small on the panel; double it for the boot text.
+    display.set_text_size(2);
     let tw = display.measure_text_with(MSG, font).0 as i16;
     let w = SCREEN_WIDTH as i16;
     let x = 0i16;
