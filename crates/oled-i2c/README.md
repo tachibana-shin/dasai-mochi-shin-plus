@@ -46,9 +46,26 @@ The driver draws text into an internal frame buffer and pushes it with
 * `draw_char(x, y, c)`, `print_char(c)` — single glyphs.
 * `set_text_size(n)` — integer scale factor (1, 2, 3, ...).
 * `set_text_color(on: bool)` — pixel value for glyph pixels.
-* `set_text_wrap(bool)` — wrap long lines at the right edge.
+* `set_text_overflow(mode)` — how lines are handled at the right edge (see the
+  [`TextOverflow`] modes below). `set_text_wrap(bool)` is kept as a shorthand
+  for `Wrap` / `None`.
 * `measure_text("..") -> (w, h)` — size in pixels at the current size.
 * `set_font(&'static Font)` — switch to a custom font (default `FONT_5X7`).
+
+#### Text overflow modes
+
+`Oled::set_text_overflow` picks how `print` / `print_char` / `draw_str` deal
+with text that would run past the panel's right edge:
+
+| Mode | Behavior |
+|------|----------|
+| `None` (default) | Draw as-is; overflow is clipped by the panel edge. |
+| `Wrap` | Break the line at the right edge and continue on the next line. |
+| `Ellipsis` | Truncate each overflowing line and append an ellipsis marker (default `"..."`, changeable with `set_ellipsis`), then wrap the remainder. |
+| `Marquee` | Scroll the text horizontally so nothing is cut off. This one is animated: render one frame per call with `scroll_text_frame(x, y, s, width, offset_px, font)`, advancing `offset_px` over time and flushing between frames. |
+
+The `Ellipsis` marker counts toward the line width, so a longer marker leaves
+less room for the visible text.
 
 `FONT_5X7` is a built-in ASCII `0x20..=0x7E` font (95 glyphs). Custom fonts
 use the same Adafruit GFX `GFXfont` layout (see `src/fonts.rs` for the struct

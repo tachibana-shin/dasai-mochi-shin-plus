@@ -160,6 +160,29 @@ impl OledConfig {
     }
 }
 
+/// How the text APIs (`print`, `draw_str`, ...) handle a line that would run
+/// past the panel's right edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextOverflow {
+    /// Draw text as-is; anything past the right edge is clipped by the panel.
+    None,
+    /// Wrap overflowing lines to the next line (Adafruit GFX `textwrap`).
+    Wrap,
+    /// Truncate each overflowing line and append an ellipsis (default `"..."`,
+    /// changeable with [`Oled::set_ellipsis`]), then wrap the remainder.
+    Ellipsis,
+    /// Scroll the text horizontally so nothing is ever cut off. This is an
+    /// animated mode driven by the caller via [`Oled::scroll_text_frame`];
+    /// the stateless `print`/`draw_str` behave like [`TextOverflow::None`].
+    Marquee,
+}
+
+impl Default for TextOverflow {
+    fn default() -> Self {
+        TextOverflow::None
+    }
+}
+
 /// An I2C OLED display driver.
 ///
 /// Owns the I2C bus, a text-cursor state, and an internal 1bpp frame buffer
@@ -180,8 +203,10 @@ pub struct Oled<I: I2c> {
     text_size: u8,
     /// Pixel value drawn for glyph foreground pixels (`true` = on).
     text_color: bool,
-    /// Wrap long lines at the right edge of the panel.
-    text_wrap: bool,
+    /// How the text APIs handle lines that exceed the panel width.
+    text_overflow: TextOverflow,
+    /// Marker appended by [`TextOverflow::Ellipsis`] (default `"..."`).
+    ellipsis: &'static str,
     /// Currently selected font.
     font: &'static Font<'static>,
     /// Panel rotation: 0 = none, 1 = 90° CW, 2 = 180°, 3 = 270° CW,
@@ -200,7 +225,8 @@ impl<I: I2c> Oled<I> {
             cursor: (0, 0),
             text_size: 1,
             text_color: true,
-            text_wrap: false,
+            text_overflow: TextOverflow::None,
+            ellipsis: "...",
             font: &FONT_5X7,
             rotation: 0,
         };
@@ -867,9 +893,38 @@ impl<I: I2c> Oled<I> {
         self.text_color = on;
     }
 
+    /// Select how the text APIs handle lines that exceed the panel width.
+    pub fn set_text_overflow(&mut self, mode: TextOverflow) {
+        self.text_overflow = mode;
+    }
+
+    /// The current text overflow mode.
+    pub fn text_overflow(&self) -> TextOverflow {
+        self.text_overflow
+    }
+
     /// Enable/disable wrapping of long lines at the right panel edge.
+    ///
+    /// Shorthand for [`Oled::set_text_overflow`]: `true` selects
+    /// [`TextOverflow::Wrap`], `false` selects [`TextOverflow::None`].
     pub fn set_text_wrap(&mut self, wrap: bool) {
-        self.text_wrap = wrap;
+        self.text_overflow = if wrap {
+            TextOverflow::Wrap
+        } else {
+            TextOverflow::None
+        };
+    }
+
+    /// Set the marker text appended by [`TextOverflow::Ellipsis`].
+    /// Default is `"..."`. Note: it counts toward the line width, so a long
+    /// marker leaves less room for the visible text.
+    pub fn set_ellipsis(&mut self, ellipsis: &'static str) {
+        self.ellipsis = ellipsis;
+    }
+
+    /// The ellipsis marker currently in use.
+    pub fn ellipsis(&self) -> &'static str {
+        self.ellipsis
     }
 
     /// Select the font used by the text APIs. Default: [`FONT_5X7`].
@@ -889,6 +944,20 @@ impl<I: I2c> Oled<I> {
 
     /// Rasterise one glyph with its top-left cell corner at `(x, y)`.
     fn draw_glyph(&mut self, x: i16, y: i16, g: &Glyph, font: &Font<'_>) {
+        self.raster_glyph_clipped(x, y, g, font, 0, self.width() as i16);
+    }
+
+    /// Like [`Oled::draw_glyph`], but skips any columns falling outside the
+    /// horizontal clip region `[clip_l, clip_r)`.
+    fn raster_glyph_clipped(
+        &mut self,
+        x: i16,
+        y: i16,
+        g: &Glyph,
+        font: &Font<'_>,
+        clip_l: i16,
+        clip_r: i16,
+    ) {
         let size = self.text_size as i16;
         let x0 = x + g.x_offset as i16;
         let y0 = y + g.y_offset as i16;
@@ -898,10 +967,16 @@ impl<I: I2c> Oled<I> {
                     continue;
                 }
                 let px = x0 + col as i16 * size;
+                if px + size <= clip_l || px >= clip_r {
+                    continue;
+                }
                 let py = y0 + row as i16 * size;
                 for sy in 0..size {
                     for sx in 0..size {
-                        self.set_pixel(px + sx, py + sy, self.text_color);
+                        let ax = px + sx;
+                        if ax >= clip_l && ax < clip_r {
+                            self.set_pixel(ax, py + sy, self.text_color);
+                        }
                     }
                 }
             }
@@ -929,17 +1004,143 @@ impl<I: I2c> Oled<I> {
 
     /// Draw a string at an absolute position using a specific font.
     /// `(x, y)` is the initial glyph cell corner; the cursor is untouched.
+    /// The first line is drawn at `(x, y)`; subsequent lines are offset down by
+    /// the line height, and lines that would exceed the panel width are handled
+    /// according to [`Oled::text_overflow`].
     pub fn draw_str_with(&mut self, x: i16, y: i16, s: &str, font: &Font<'_>) {
+        let line_h = self.line_height() as i16;
+        let mut cy = y;
+        let mut rest = s;
+        loop {
+            let (line, after) = match rest.find('\n') {
+                Some(nl) => (&rest[..nl], &rest[nl + 1..]),
+                None => (rest, ""),
+            };
+            self.draw_line_mode(x, cy, line, font);
+            cy += line_h;
+            if after.is_empty() {
+                break;
+            }
+            rest = after;
+        }
+    }
+
+    /// Draw one logical line at absolute `(x, y)` applying the overflow mode.
+    fn draw_line_mode(&mut self, x: i16, y: i16, line: &str, font: &Font<'_>) {
+        let line_h = self.line_height() as i16;
+        let width = self.width() as i16;
+        match self.text_overflow {
+            TextOverflow::None | TextOverflow::Marquee => {
+                self.draw_line_raw(x, y, line, font);
+            }
+            TextOverflow::Wrap => {
+                let mut cx = x;
+                let mut cy = y;
+                let size = self.text_size as i16;
+                for ch in line.chars() {
+                    let adv = font.advance(ch) as i16 * size;
+                    if cx + adv > width {
+                        cx = x;
+                        cy += line_h;
+                    }
+                    self.draw_char_with(cx, cy, ch, font);
+                    cx += adv;
+                }
+            }
+            TextOverflow::Ellipsis => {
+                let ell_chars: heapless::Vec<char, 8> = self.ellipsis.chars().collect();
+                let ell_w = self.str_width_px(self.ellipsis, font);
+                let mut cy = y;
+                let mut rest = line;
+                while !rest.is_empty() {
+                    let fit = self.fit_prefix(rest, width - ell_w, font);
+                    if fit == rest.len() {
+                        self.draw_line_raw(x, cy, rest, font);
+                        break;
+                    }
+                    let take = if fit == 0 {
+                        rest.chars().next().map_or(0, |c| c.len_utf8())
+                    } else {
+                        fit
+                    };
+                    let ex = x + self.str_width_px(&rest[..take], font);
+                    self.draw_line_raw(x, cy, &rest[..take], font);
+                    let mut exs = ex;
+                    for &c in &ell_chars {
+                        self.draw_char_with(exs, cy, c, font);
+                        exs += font.advance(c) as i16 * self.text_size as i16;
+                    }
+                    cy += line_h;
+                    rest = &rest[take..];
+                }
+            }
+        }
+    }
+
+    /// Draw every character of `line` left-to-right at absolute `(x, y)`,
+    /// starting the glyph cells at `x` (no wrapping).
+    fn draw_line_raw(&mut self, x: i16, y: i16, line: &str, font: &Font<'_>) {
         let mut cx = x;
+        for ch in line.chars() {
+            self.draw_char_with(cx, y, ch, font);
+            cx += font.advance(ch) as i16 * self.text_size as i16;
+        }
+    }
+
+    /// Pixel width of `s` with `font` at the current text size.
+    fn str_width_px(&self, s: &str, font: &Font<'_>) -> i16 {
+        s.chars()
+            .fold(0i16, |a, c| a + font.advance(c) as i16 * self.text_size as i16)
+    }
+
+    /// Number of leading bytes of `line` whose total width fits within
+    /// `budget` pixels (a `char` boundary), or `0` if even the first char
+    /// overflows.
+    fn fit_prefix(&self, line: &str, budget: i16, font: &Font<'_>) -> usize {
+        let size = self.text_size as i16;
+        let mut w = 0i16;
+        let mut byte = 0usize;
+        for (i, c) in line.char_indices() {
+            let adv = font.advance(c) as i16 * size;
+            if w + adv > budget {
+                break;
+            }
+            w += adv;
+            byte = i + c.len_utf8();
+        }
+        byte
+    }
+
+    /// Draw one frame of a horizontally scrolling ("marquee") text run.
+    ///
+    /// The text is drawn so that a `width`-wide window starting at `x` shows
+    /// the string shifted left by `offset_px`, clipped to `[x, x + width)`.
+    /// To animate, call this repeatedly with a growing `offset_px` (flushing
+    /// the frame buffer each time); loop `offset_px` from `0` up to the full
+    /// text width (see [`Oled::measure_text`]) for the whole message to scroll
+    /// through.
+    pub fn scroll_text_frame(
+        &mut self,
+        x: i16,
+        y: i16,
+        s: &str,
+        width: u16,
+        offset_px: i16,
+        font: &Font<'_>,
+    ) {
+        let right = x + width as i16;
+        let size = self.text_size as i16;
+        let mut cx = x - offset_px;
         for ch in s.chars() {
-            if ch == '\n' {
-                cx = x;
-                continue;
-            }
+            let adv = font.advance(ch) as i16 * size;
             if let Some(g) = font.glyph_for(ch) {
-                self.draw_glyph(cx, y, g, font);
-                cx += g.x_advance as i16 * self.text_size as i16;
+                let gx0 = cx + g.x_offset as i16;
+                let gw = g.width as i16 * size;
+                if gx0 < right && gx0 + gw >= x {
+                    self.raster_glyph_clipped(cx, y, g, font, x, right);
+                }
             }
+            cx += adv;
         }
     }
 
@@ -952,7 +1153,9 @@ impl<I: I2c> Oled<I> {
             '\r' => {}
             _ => {
                 let adv = self.font.advance(ch) as i16 * self.text_size as i16;
-                if self.text_wrap && self.cursor.0 + adv > self.width() as i16 {
+                if self.text_overflow == TextOverflow::Wrap
+                    && self.cursor.0 + adv > self.width() as i16
+                {
                     self.cursor = (0, self.cursor.1 + self.line_height() as i16);
                 }
                 if let Some(g) = self.font.glyph_for(ch) {
@@ -965,9 +1168,63 @@ impl<I: I2c> Oled<I> {
 
     /// Draw a string at the cursor and advance it (Adafruit `print` style).
     /// `\n` moves to the next line.
+    ///
+    /// The overflow mode decides how lines that reach the panel's right edge
+    /// are handled: [`TextOverflow::Wrap`] wraps, [`TextOverflow::Ellipsis`]
+    /// truncates each overflowing line and appends the ellipsis marker before
+    /// wrapping the remainder, and [`TextOverflow::None`] /
+    /// [`TextOverflow::Marquee`] draw past the edge (clipped by the panel).
     pub fn print(&mut self, s: &str) {
-        for ch in s.chars() {
-            self.print_char(ch);
+        if self.text_overflow != TextOverflow::Ellipsis {
+            for ch in s.chars() {
+                self.print_char(ch);
+            }
+            return;
+        }
+
+        // Ellipsis: process one logical line at a time. An overflowing line is
+        // truncated (leaving room for the ellipsis marker) and wrapped.
+        let line_h = self.line_height() as i16;
+        let mut rest = s;
+        loop {
+            let (line, after) = match rest.find('\n') {
+                Some(nl) => (&rest[..nl], &rest[nl + 1..]),
+                None => (rest, ""),
+            };
+            let ell_chars: heapless::Vec<char, 8> = self.ellipsis.chars().collect();
+            let ell_w = self
+                .ellipsis
+                .chars()
+                .fold(0i16, |a, c| a + self.font.advance(c) as i16 * self.text_size as i16);
+            let mut sub = line;
+            while !sub.is_empty() {
+                let avail = self.width() as i16 - self.cursor.0;
+                let fit = self.fit_prefix(sub, avail - ell_w, self.font);
+                if fit == sub.len() {
+                    for ch in sub.chars() {
+                        self.print_char(ch);
+                    }
+                    break;
+                }
+                let take = if fit == 0 {
+                    sub.chars().next().map_or(0, |c| c.len_utf8())
+                } else {
+                    fit
+                };
+                for ch in sub[..take].chars() {
+                    self.print_char(ch);
+                }
+                for &c in &ell_chars {
+                    self.print_char(c);
+                }
+                self.cursor = (0, self.cursor.1 + line_h);
+                sub = &sub[take..];
+            }
+            if after.is_empty() {
+                break;
+            }
+            self.cursor = (0, self.cursor.1 + line_h);
+            rest = after;
         }
     }
 
@@ -1552,5 +1809,76 @@ ENDFONT
         assert!(pixel(fb, 0, 0));
         assert!(pixel(fb, 1, 0));
         assert!(!pixel(fb, 2, 0));
+    }
+
+    #[test]
+    fn overflow_enum_defaults_to_none() {
+        assert_eq!(TextOverflow::default(), TextOverflow::None);
+        let mut d = new_display();
+        assert_eq!(d.text_overflow(), TextOverflow::None);
+        assert_eq!(d.ellipsis(), "...");
+        // set_text_wrap(true) maps onto the Wrap variant (back-compat).
+        d.set_text_wrap(true);
+        assert_eq!(d.text_overflow(), TextOverflow::Wrap);
+        d.set_text_overflow(TextOverflow::Ellipsis);
+        assert_eq!(d.text_overflow(), TextOverflow::Ellipsis);
+    }
+
+    #[test]
+    fn print_ellipsis_truncates_and_wraps() {
+        let mut d = new_display();
+        d.clear();
+        d.set_text_overflow(TextOverflow::Ellipsis);
+        d.set_cursor(0, 0);
+        // 20 chars x 6px = 120px; 18 fit on row 0 leaving 18px for "...".
+        d.print("ABCDEFGHIJKLMNOPQRST"); // 20 letters
+        // Row 0: A..R (18 chars = 108px) + "..." (18px) = 126 <= 128.
+        // Row 1: remaining S,T (2 chars = 12px) drawn plainly.
+        assert_eq!(d.cursor(), (12, 8));
+    }
+
+    #[test]
+    fn print_wrap_overflow_to_next_row() {
+        let mut d = new_display();
+        d.clear();
+        d.set_text_overflow(TextOverflow::Wrap);
+        d.set_cursor(0, 0);
+        d.print("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+        // 21 chars fit on row 0 (A..U, cols 0..=120); V..Z wrap to row 1.
+        assert_eq!(d.cursor(), (30, 8));
+    }
+
+    #[test]
+    fn draw_str_overflow_none_ignores_edge() {
+        let mut d = new_display();
+        d.clear();
+        d.set_text_overflow(TextOverflow::None);
+        // Much wider than the panel: drawn as-is (clipped by the panel).
+        d.draw_str(0, 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+        // Cursor is untouched by draw_str.
+        assert_eq!(d.cursor(), (0, 0));
+        // Some content on the first row.
+        let fb = d.fb();
+        assert!(pixel(fb, 2, 0)); // top of 'A'
+    }
+
+    #[test]
+    fn scroll_text_frame_clips_to_window() {
+        let mut d = new_display();
+        d.clear();
+        // Window [0,16): the first chars of "ABC" are visible.
+        d.scroll_text_frame(0, 0, "ABC", 16, 0, &FONT_5X7);
+        assert!(pixel(d.fb(), 2, 0)); // top of 'A' is inside the window
+        // Scrolled far past the end (text is 18px wide): nothing in the window.
+        d.clear();
+        d.scroll_text_frame(0, 0, "ABC", 16, 64, &FONT_5X7);
+        assert!(!pixel(d.fb(), 2, 0));
+        // Right-edge clip: with a 12px window, 'C' (at cells 12..16) is fully
+        // clipped out even though A(0..4) and B(6..10) are visible.
+        d.clear();
+        let mut d2 = d;
+        d2.scroll_text_frame(0, 0, "ABC", 12, 0, &FONT_5X7);
+        assert!(pixel(d2.fb(), 2, 0)); // 'A' peak visible
+        assert!(!pixel(d2.fb(), 14, 0)); // 'C' column fully outside the window
     }
 }
