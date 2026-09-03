@@ -23,19 +23,26 @@ use crate::config;
 const STORAGE_OFFSET: u32 = 0x001F_0000;
 /// Flash sector size in bytes (ESP32-C3 NOR flash).
 const SECTOR_SIZE: u32 = 4096;
-/// Bytes we use in the sector: [magic: 4][brightness: 1][pad: 3].
-const STORAGE_LEN: usize = 8;
+/// Bytes we use in the sector: `[magic: 4][brightness: 1][reserved: 1][gmt_offset: i32]`.
+/// Brightness lives at byte 4 (unchanged from the original layout for
+/// compatibility); the UTC offset occupies bytes 6..10. Total 10, padded to a
+/// word-aligned read length of 12.
+const STORAGE_LEN: usize = 12;
+/// Byte index of the brightness value within the sector.
+const BRIGHTNESS_BYTE: usize = 4;
+/// Byte index of the UTC offset (i32, little-endian) within the sector.
+const GMT_OFFSET_BYTE: usize = 6;
 
 /// Magic identifier distinguishing "ours" from freshly-erased (`0xFF`) flash.
 const MAGIC: u32 = 0xD45A_4A55;
 
-/// Read 8 raw bytes from the config sector into a little-endian byte slice.
+/// Read 12 raw bytes from the config sector into a little-endian byte slice.
 ///
-/// `raw` is a word-aligned `[u32; 2]` (required by the ROM read path); the
-/// returned slice views the same memory as 8 consecutive bytes, which is the
+/// `raw` is a word-aligned `[u32; 3]` (required by the ROM read path); the
+/// returned slice views the same memory as 12 consecutive bytes, which is the
 /// exact byte order stored in flash (RISC-V is little-endian).
-unsafe fn raw_bytes(raw: &[u32; 2]) -> [u8; 8] {
-    let mut out = [0u8; 8];
+unsafe fn raw_bytes(raw: &[u32; 3]) -> [u8; 12] {
+    let mut out = [0u8; 12];
     for (i, w) in raw.iter().enumerate() {
         out[i * 4] = *w as u8;
         out[i * 4 + 1] = (*w >> 8) as u8;
@@ -45,37 +52,91 @@ unsafe fn raw_bytes(raw: &[u32; 2]) -> [u8; 8] {
     out
 }
 
-/// Load the stored brightness, or the default if nothing valid is stored.
-pub fn load_brightness() -> u8 {
+/// Read the whole config sector into a byte slice (`None` if magic is missing).
+fn read_sector() -> Option<[u8; STORAGE_LEN]> {
     let mut raw = [0u32; STORAGE_LEN / 4];
     // SAFETY: `raw` is word-aligned and `STORAGE_OFFSET + STORAGE_LEN` is within
     // bounds (verified offset far below the flash top on 2 MB / 4 MB modules).
     let ok = unsafe { ll::spiflash_read(STORAGE_OFFSET, raw.as_mut_ptr(), STORAGE_LEN as u32) }.is_ok();
     if !ok {
-        return config::BRIGHT.default;
+        return None;
     }
     let bytes = unsafe { raw_bytes(&raw) };
     let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     if magic != MAGIC {
-        return config::BRIGHT.default;
+        return None;
     }
-    bytes[4].clamp(config::BRIGHT.min, config::BRIGHT.max)
+    Some(bytes)
+}
+
+/// Load the stored brightness, or the default if nothing valid is stored.
+pub fn load_brightness() -> u8 {
+    let Some(bytes) = read_sector() else {
+        return config::BRIGHT.default;
+    };
+    bytes[BRIGHTNESS_BYTE].clamp(config::BRIGHT.min, config::BRIGHT.max)
 }
 
 /// Persist the brightness value across reboots (erases + rewrites the sector).
+/// The UTC offset is read back first so it isn't lost when rewriting.
 pub fn save_brightness(value: u8) {
-    let magic = MAGIC.to_le_bytes();
-    let bytes = [magic[0], magic[1], magic[2], magic[3], value, 0, 0, 0];
-    let raw = [
-        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
-    ];
-    // SAFETY: same bounds rationale as `load_brightness`; `raw` is word-aligned
-    // and the ROM functions are safe to call from flash-resident code (they
-    // suspend the cache around the operation, exactly as esp-storage does).
+    let gmt = load_raw_gmt();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
+    }
+    write_sector(value, gmt);
+}
+
+/// Load the stored UTC offset in whole hours, falling back to the default if
+/// nothing valid is stored (or the stored value is out of a sane range).
+fn load_raw_gmt() -> i32 {
+    let Some(bytes) = read_sector() else {
+        return config::TIME.gmt_offset_hours;
+    };
+    let v = i32::from_le_bytes([
+        bytes[GMT_OFFSET_BYTE],
+        bytes[GMT_OFFSET_BYTE + 1],
+        bytes[GMT_OFFSET_BYTE + 2],
+        bytes[GMT_OFFSET_BYTE + 3],
+    ]);
+    if v < crate::time::GMT_MIN || v > crate::time::GMT_MAX {
+        config::TIME.gmt_offset_hours
+    } else {
+        v
+    }
+}
+
+/// Public UTC-offset loader, used at boot to restore the persisted timezone.
+pub fn load_gmt_offset() -> i32 {
+    load_raw_gmt()
+}
+
+/// Persist the UTC offset across reboots, preserving the brightness value.
+pub fn save_gmt_offset(value: i32) {
+    let brightness = load_brightness();
+    unsafe {
+        let _ = ll::spiflash_unlock();
+        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
+    }
+    write_sector(brightness, value.clamp(crate::time::GMT_MIN, crate::time::GMT_MAX));
+}
+
+/// Write both brightness and UTC offset to the config sector in one erase.
+fn write_sector(brightness: u8, gmt: i32) {
+    let magic = MAGIC.to_le_bytes();
+    let mut bytes = [0u8; STORAGE_LEN];
+    bytes[0..4].copy_from_slice(&magic);
+    bytes[BRIGHTNESS_BYTE] = brightness;
+    bytes[GMT_OFFSET_BYTE..GMT_OFFSET_BYTE + 4].copy_from_slice(&gmt.to_le_bytes());
+    let mut raw = [0u32; STORAGE_LEN / 4];
+    for (i, block) in bytes.chunks_exact(4).enumerate() {
+        raw[i] = u32::from_le_bytes([block[0], block[1], block[2], block[3]]);
+    }
+    // SAFETY: same bounds rationale as `read_sector`; `raw` is word-aligned and
+    // the ROM functions are safe to call from flash-resident code (they suspend
+    // the cache around the operation, exactly as esp-storage does).
+    unsafe {
         let _ = ll::spiflash_write(STORAGE_OFFSET, raw.as_ptr(), STORAGE_LEN as u32);
     }
 }

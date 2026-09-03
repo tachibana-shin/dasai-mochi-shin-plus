@@ -4,54 +4,82 @@
 //! gestures from the shared tap channel ([`TapChannel`]). Navigation inside
 //! the settings list:
 //! - **tap** – move the selection down (wraps to the top).
-//! - **double-tap** – enter the selected tile's edit mode.
+//! - **double-tap** – enter the selected tile's edit mode (or trigger an
+//!   action tile such as "Force AP").
 //! - **triple-tap** – back out to the face player.
 //! - **press** – reserved.
 //!
-//! Edit mode is tile-specific. The brightness tile uses:
-//! - **tap** – increase the value (wraps MAX→MIN).
-//! - **hold** – auto-repeat increase (the sensor task publishes repeated
-//!   `Press` events while the touch is held past the press threshold).
+//! Edit mode is tile-specific. The value tiles (brightness, timezone, Wi-Fi)
+//! all follow the same pattern:
+//! - **tap** – step the value up (wrapping at the top back to the bottom).
+//! - **hold** – auto-repeat (the sensor task publishes repeated `Press` events
+//!   while the touch is held past the press threshold).
 //! - **double-tap** – save and return to the list.
 //! - **triple-tap** – cancel and return to the list.
 //!
-//! Brightness edits are applied live ([`screen::set_brightness`]); the saved
-//! value is persisted by [`crate::storage`] when the user double-taps.
+//! Brightness and the UTC timezone offset are applied live and persisted via
+//! [`crate::storage`]. The Wi-Fi on/off toggle and "Force AP" action talk to
+//! [`crate::wifi`] immediately.
 
 use oled_i2c::FONT_5X7;
+
+use core::fmt::Write as _;
 
 use crate::config;
 use crate::drivers::screen;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::Screen;
+use crate::time;
+
+/// The kinds of settings tiles. Each maps to a distinct edit/action handler.
+#[derive(Clone, Copy, PartialEq)]
+enum TileKind {
+    /// Display brightness (0..=255), stored in flash.
+    Brightness,
+    /// UTC timezone offset in whole hours (-12..=+14), stored in flash.
+    Timezone,
+    /// User Wi-Fi on/off switch, applied live.
+    WifiToggle,
+    /// Action: force the SoftAP provisioning mode back up.
+    ForceAp,
+}
 
 /// A single settings entry (a "tile") in the list.
 struct Tile {
     /// Short title shown on the row.
     title: &'static str,
+    kind: TileKind,
 }
 
 /// The tiles shown in the settings list, in display order. Extend this list to
 /// add future settings; each entry gets a row in the listview.
-const TILES: &[Tile] = &[Tile { title: "Brightness" }];
+const TILES: &[Tile] = &[
+    Tile { title: "Brightness", kind: TileKind::Brightness },
+    Tile { title: "GMT Offset", kind: TileKind::Timezone },
+    Tile { title: "Wi-Fi", kind: TileKind::WifiToggle },
+    Tile { title: "AP Setup", kind: TileKind::ForceAp },
+];
 
 /// Show the settings listview until the user exits back to the face player.
 ///
 /// `brightness` is the currently selected brightness (mutated by the tile's
-/// edit mode) — the caller owns persistence.
+/// edit mode) — the caller owns persistence. The timezone and Wi-Fi values are
+/// module-global, so no extra state is threaded through.
 pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brightness: &mut u8) -> Screen {
     let mut sel = 0usize;
 
     loop {
-        draw_list(display, brightness, sel);
+        draw_list(display, *brightness, sel);
         match tap::wait_tap(tap).await {
             Gesture::Tap => {
                 sel = (sel + 1) % TILES.len();
             }
-            Gesture::DoubleTap => {
-                // Only the brightness tile exists for now.
-                edit_brightness(display, tap, brightness).await;
-            }
+            Gesture::DoubleTap => match TILES[sel].kind {
+                TileKind::Brightness => edit_brightness(display, tap, brightness).await,
+                TileKind::Timezone => edit_timezone(display, tap).await,
+                TileKind::WifiToggle => edit_wifi(display, tap).await,
+                TileKind::ForceAp => trigger_force_ap(display).await,
+            },
             Gesture::TripleTap => return Screen::FacePlayer,
             // Long-press is reserved for future actions.
             Gesture::Press => {}
@@ -61,11 +89,10 @@ pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brigh
 
 /// Render the settings listview: one row per tile plus a bottom hint bar.
 ///
-/// Each row shows only the tile's label (left) and a progress bar (right) —
-/// no stray numeric text cluttering the tiny 128x64 panel. The label and bar
-/// are both vertically centred in the row, and the bar tucks right after the
-/// label with a small gap (no oversized horizontal padding).
-fn draw_list(display: &mut screen::Display, brightness: &u8, sel: usize) {
+/// Each row shows the tile's label on the left and a value indicator on the
+/// right: a progress bar for brightness, "UTC±N" for the timezone, "ON"/"OFF"
+/// for Wi-Fi, and an "open" glyph for the AP action.
+fn draw_list(display: &mut screen::Display, brightness: u8, sel: usize) {
     display.clear_buffer();
 
     // Force native 1x scale + the 5x7 font so rows stay compact and labels can
@@ -74,14 +101,12 @@ fn draw_list(display: &mut screen::Display, brightness: &u8, sel: usize) {
     display.set_font(&FONT_5X7);
 
     // A FONT_5X7 glyph cell is 8px tall; give each row a little breathing room.
-    let row_h = 12i16;
-    let pad_x = 4i16;
-    let bar_h = 4u16;
-    let glyph_w = 6i16; // FONT_5X7 x_advance
+    let row_h = 13i16;
+    let pad_x = 3i16;
     let glyph_h = 8i16; // FONT_5X7 glyph cell height
 
     for (i, tile) in TILES.iter().enumerate() {
-        let y = 3 + i as i16 * row_h;
+        let y = 1 + i as i16 * row_h;
         let selected = i == sel;
 
         // Highlight bar behind the selected row; unselected rows are plain.
@@ -97,40 +122,75 @@ fn draw_list(display: &mut screen::Display, brightness: &u8, sel: usize) {
         let ty = y + (row_h - glyph_h) / 2;
         display.draw_str_with(pad_x, ty, tile.title, &FONT_5X7);
 
-        // Progress bar describing the value, vertically centred and hugging the
-        // label + right margin with even paddings.
-        let title_w = (tile.title.len() as i16) * glyph_w;
-        let gap = 3i16;
-        let bar_x = pad_x + title_w + gap;
-        let bar_w = (config::SCREEN_WIDTH as i16 - bar_x - pad_x).max(0) as u16;
-        let fill = ((*brightness as u32) * (bar_w as u32) / 255) as u16;
-        let by = y + (row_h as i16 - bar_h as i16) / 2;
-        display.draw_rect(bar_x, by, bar_w, bar_h, text_on);
-        if fill > 0 {
-            display.fill_rect(bar_x + 1, by + 1, fill.saturating_sub(2), bar_h - 2, text_on);
-        }
+        // Value indicator hugging the right margin.
+        draw_value(display, tile.kind, brightness, text_on, y);
     }
 
     // Bottom hint.
     display.set_text_color(true);
-    display.draw_str_with(4, config::SCREEN_HEIGHT as i16 - 9, "triple = exit", &FONT_5X7);
+    display.set_text_size(1);
+    display.draw_str_with(2, config::SCREEN_HEIGHT as i16 - 9, "t=sel 2x=edit 3x=back", &FONT_5X7);
 
     let _ = display.flush();
 }
 
-/// Brightness tile edit mode.
+/// Draw the right-hand value indicator for a tile row ("UTC+7", "ON", or the
+/// brightness bar).
+fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, text_on: bool, y: i16) {
+    let glyph_w = 6i16;
+    let pad_x = 3i16;
+    let bar_h = 5u16;
+    let right = config::SCREEN_WIDTH as i16 - pad_x;
+
+    match kind {
+        TileKind::Brightness => {
+            // Progress bar: describes the 0..=255 brightness level.
+            let bar_w = 40u16;
+            let fill = ((brightness as u32) * (bar_w as u32) / 255) as u16;
+            let bar_x = right - bar_w as i16;
+            let by = y + (12i16 - bar_h as i16) / 2;
+            display.draw_rect(bar_x, by, bar_w, bar_h, text_on);
+            if fill > 0 {
+                display.fill_rect(bar_x + 1, by + 1, fill.saturating_sub(2), bar_h - 2, text_on);
+            }
+        }
+        TileKind::Timezone => {
+            // "UTC+7" / "UTC-5" text on the right.
+            let s = format_utc(time::gmt_offset());
+            let w = s.len() as i16 * glyph_w;
+            display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, &s, &FONT_5X7);
+        }
+        TileKind::WifiToggle => {
+            let s = if crate::wifi::wifi_enabled() { "ON" } else { "OFF" };
+            let w = s.len() as i16 * glyph_w;
+            display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
+        }
+        TileKind::ForceAp => {
+            // No value; just a hint that it's a one-shot action.
+            let s = ">";
+            display.draw_str_with(right - glyph_w, y + (12i16 - 8i16) / 2, s, &FONT_5X7);
+        }
+    }
+}
+
+/// Format a UTC offset in whole hours as `+7`, `-5`, `0`.
+fn format_utc(h: i32) -> heapless::String<5> {
+    use heapless::String;
+    let mut s: String<5> = String::new();
+    let _ = core::write!(&mut s, "{h:+}");
+    s
+}
+
+/// Brightness tile edit mode: tap/hold steps up, double saves, triple cancels.
 async fn edit_brightness(display: &mut screen::Display, tap: &'static TapChannel, brightness: &mut u8) {
     loop {
         draw_brightness_edit(display, *brightness);
         match tap::wait_tap(tap).await {
-            // Tap bumps once; each repeated `Press` (from holding) bumps again —
-            // together these give "tap to step, hold to keep increasing".
             Gesture::Tap | Gesture::Press => {
-                *brightness = bump(*brightness);
+                *brightness = bump_brightness(*brightness);
                 screen::set_brightness(display, *brightness);
             }
             Gesture::DoubleTap => {
-                // Save + back to list.
                 crate::storage::save_brightness(*brightness);
                 return;
             }
@@ -140,7 +200,7 @@ async fn edit_brightness(display: &mut screen::Display, tap: &'static TapChannel
 }
 
 /// Advance the brightness one step, wrapping MAX→MIN.
-fn bump(v: u8) -> u8 {
+fn bump_brightness(v: u8) -> u8 {
     if v >= config::BRIGHT.max {
         config::BRIGHT.min
     } else {
@@ -148,33 +208,140 @@ fn bump(v: u8) -> u8 {
     }
 }
 
-/// Render the brightness edit screen (small title + a progress bar as the
-/// only level indicator — no numeric readout). Text scale is forced to 1 here
-/// so the label stays compact regardless of any other screen's settings.
+/// Render the brightness edit screen (small title + a progress bar).
 fn draw_brightness_edit(display: &mut screen::Display, v: u8) {
     display.clear_buffer();
-    // Force native 1x scale + the 5x7 font so the label can never render
-    // oversized (the shared Display object may have been scaled by an earlier
-    // screen). This is what keeps "Brightness" small and clear of the bar.
-    display.set_text_size(1);
-    display.set_font(&FONT_5X7);
+    screen_edit_base(display, "Brightness");
     display.set_text_color(true);
 
-    // Small label at the top; a FONT_5X7 cell is 8px tall (ends ~y=10).
-    display.draw_str_with(4, 2, "Brightness", &FONT_5X7);
-
-    // Progress bar: the only level indicator. Stacked right below the label
-    // with a small gap so the two never touch.
     let bar_w = 100u16;
     let bar_h = 6u16;
     let bar_x = (config::SCREEN_WIDTH as i16 - bar_w as i16) / 2;
-    let bar_y = 16i16;
+    let bar_y = 18i16;
     let fill = ((v as u32) * (bar_w as u32) / 255) as u16;
     display.draw_rect(bar_x, bar_y, bar_w, bar_h, true);
     if fill > 0 {
         display.fill_rect(bar_x + 1, bar_y + 1, fill.saturating_sub(2).max(0), bar_h - 2, true);
     }
 
-    display.draw_str_with(4, 56, "2x save  3x cancel", &FONT_5X7);
+    draw_edit_hint(display);
+}
+
+/// Timezone tile edit mode. `tap`/`press` steps the offset up by one hour
+/// (wrapping `+14` → `-12`), applied live; `double` saves, `triple` cancels.
+async fn edit_timezone(display: &mut screen::Display, tap: &'static TapChannel) {
+    loop {
+        draw_timezone_edit(display);
+        match tap::wait_tap(tap).await {
+            Gesture::Tap | Gesture::Press => {
+                let cur = time::gmt_offset();
+                let next = if cur >= time::GMT_MAX { time::GMT_MIN } else { cur + 1 };
+                time::set_gmt_offset(next); // live preview, not yet persisted
+            }
+            Gesture::DoubleTap => {
+                time::save_gmt_offset(time::gmt_offset()); // persist on save
+                return;
+            }
+            Gesture::TripleTap => {
+                // Cancel: revert to the last-persisted value.
+                time::set_gmt_offset(crate::storage::load_gmt_offset());
+                return;
+            }
+        }
+    }
+}
+
+/// Render the timezone edit screen: shows the current "UTC+7" and a bar whose
+/// fill corresponds to position within -12..=+14.
+fn draw_timezone_edit(display: &mut screen::Display) {
+    display.clear_buffer();
+    screen_edit_base(display, "Time Zone");
+    display.set_text_color(true);
+
+    let h = time::gmt_offset();
+    // Bar representing the position of `h` across the whole UTC range.
+    let bar_w = 100u16;
+    let bar_h = 6u16;
+    let bar_x = (config::SCREEN_WIDTH as i16 - bar_w as i16) / 2;
+    let bar_y = 18i16;
+    let span = (time::GMT_MAX - time::GMT_MIN) as u32 + 1; // 27 values
+    let frac = (((h - time::GMT_MIN) as u32) * (bar_w as u32) / span) as u16;
+    display.draw_rect(bar_x, bar_y, bar_w, bar_h, true);
+    if frac > 0 {
+        display.fill_rect(bar_x + 1, bar_y + 1, frac.saturating_sub(2), bar_h - 2, true);
+    }
+
+    // Big readable "UTC+7".
+    display.set_text_size(1);
+    let s = format_utc(h);
+    let w = 3 * 6 + s.len() as i16 * 6; // "UTC" (3 glyphs) + offset
+    let x = (config::SCREEN_WIDTH as i16 - w) / 2;
+    display.draw_str_with(x, 30, "UTC", &FONT_5X7);
+    display.draw_str_with(x + 3 * 6, 30, &s, &FONT_5X7);
+
+    draw_edit_hint(display);
+}
+
+/// Wi-Fi on/off tile edit mode. `tap`/`press` toggles, applied live; `double`
+/// confirms (state is module-global, so nothing extra to persist); `triple`
+/// returns to the list without further change.
+async fn edit_wifi(display: &mut screen::Display, tap: &'static TapChannel) {
+    loop {
+        draw_wifi_edit(display);
+        match tap::wait_tap(tap).await {
+            Gesture::Tap | Gesture::Press => {
+                crate::wifi::set_wifi_enabled(!crate::wifi::wifi_enabled());
+            }
+            Gesture::DoubleTap | Gesture::TripleTap => return,
+        }
+    }
+}
+
+/// Render the Wi-Fi on/off edit screen.
+fn draw_wifi_edit(display: &mut screen::Display) {
+    display.clear_buffer();
+    screen_edit_base(display, "Wi-Fi");
+    display.set_text_color(true);
+
+    let on = crate::wifi::wifi_enabled();
+    let s = if on { "ON" } else { "OFF" };
+    let w = s.len() as i16 * 12; // 2x scale for a clear readout
+    display.set_text_size(2);
+    let x = (config::SCREEN_WIDTH as i16 - w) / 2;
+    display.draw_str_with(x, 24, s, &FONT_5X7);
+
+    display.set_text_size(1);
+    draw_edit_hint(display);
+}
+
+/// Force-AP action tile: bring the SoftAP back up and show a short
+/// confirmation, then return to the list so the user can join with a phone.
+async fn trigger_force_ap(display: &mut screen::Display) {
+    crate::wifi::request_force_ap();
+
+    display.clear_buffer();
+    screen_edit_base(display, "AP Setup");
+    display.set_text_color(true);
+    display.draw_str_with(4, 24, "AP is on: join", &FONT_5X7);
+    display.draw_str_with(4, 34, "\"DasaiSetup\"", &FONT_5X7);
+    display.draw_str_with(4, 46, "to change network", &FONT_5X7);
     let _ = display.flush();
+
+    embassy_time::Timer::after_millis(2000).await;
+}
+
+/// Reset the shared display to 1x scale + 5x7 font and draw a small centred
+/// title at the top of the screen (shared by every edit screen).
+fn screen_edit_base(display: &mut screen::Display, title: &str) {
+    display.set_text_size(1);
+    display.set_font(&FONT_5X7);
+    display.set_text_color(true);
+    display.draw_str_with(2, 2, title, &FONT_5X7);
+}
+
+/// Bottom hint line for edit screens, always "2x save  3x back".
+fn draw_edit_hint(display: &mut screen::Display) {
+    display.set_text_size(1);
+    display.set_text_color(true);
+    display.draw_str_with(2, config::SCREEN_HEIGHT as i16 - 9, "2x save  3x back", &FONT_5X7);
 }

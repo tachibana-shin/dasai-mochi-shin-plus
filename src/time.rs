@@ -12,12 +12,20 @@
 //! - boot-elapsed seconds at the sync instant (`u32` is safe for ~136 years).
 //!
 //! NTP always reports time in **UTC**, but the clock face should show the
-//! local wall-clock time. The timezone offset comes from [`crate::config::TIME`]
-//! (default UTC+7, Vietnam) so it can later be made user-adjustable.
+//! local wall-clock time. The timezone offset is a runtime value (default
+//! UTC+7, Vietnam) that the settings screen can adjust; it lives in a 32-bit
+//! atomic so the single-threaded clock/tap path can read it cheaply and
+//! persists it to flash via [`crate::storage`].
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use esp_hal::time::Instant as EspInstant;
+
+/// Valid range for a UTC offset in whole hours (roughly `UTC-12`..`UTC+14`).
+/// Used to reject a corrupt/never-written flash value so it falls back to the
+/// default instead of producing a nonsense clock.
+pub const GMT_MIN: i32 = -12;
+pub const GMT_MAX: i32 = 14;
 
 /// Unix seconds (since 1970) of the last successful NTP sync, or `0` if never
 /// synced. `0` is also a valid time (1970-01-01) but that is never produced by
@@ -25,6 +33,8 @@ use esp_hal::time::Instant as EspInstant;
 static NTP_UNIX_SECS: AtomicU32 = AtomicU32::new(0);
 /// Boot-elapsed seconds recorded at the same instant as [`NTP_UNIX_SECS`].
 static NTP_SNAP_SECS: AtomicU32 = AtomicU32::new(0);
+/// Current UTC offset in whole hours. Defaults to [`crate::config::TIME`] (+7).
+static GMT_OFFSET: AtomicI32 = AtomicI32::new(crate::config::TIME.gmt_offset_hours);
 
 fn boot_secs() -> u32 {
     (EspInstant::now().duration_since_epoch().as_micros() / 1_000_000) as u32
@@ -38,6 +48,30 @@ pub fn set_ntp_time(unix_secs: i64) {
     }
     NTP_UNIX_SECS.store(unix_secs as u32, Ordering::Release);
     NTP_SNAP_SECS.store(boot_secs(), Ordering::Release);
+}
+
+/// Current UTC offset in whole hours (the value the clock face adds to UTC).
+pub fn gmt_offset() -> i32 {
+    GMT_OFFSET.load(Ordering::Acquire)
+}
+
+/// Restore the persisted UTC offset (from flash) into the running value. Call
+/// once at boot so the clock honours the stored timezone.
+pub fn init_gmt_offset() {
+    let v = crate::storage::load_gmt_offset().clamp(GMT_MIN, GMT_MAX);
+    GMT_OFFSET.store(v, Ordering::Release);
+}
+
+/// Set the UTC offset (in whole hours) in memory only — applied live while the
+/// user edits the timezone in the settings screen. Out-of-range values are
+/// clamped to [`GMT_MIN`]..[`GMT_MAX`]. Call [`save_gmt_offset`] to persist.
+pub fn set_gmt_offset(hours: i32) {
+    GMT_OFFSET.store(hours.clamp(GMT_MIN, GMT_MAX), Ordering::Release);
+}
+
+/// Persist the current UTC offset to flash so it survives reboots.
+pub fn save_gmt_offset(hours: i32) {
+    crate::storage::save_gmt_offset(hours.clamp(GMT_MIN, GMT_MAX));
 }
 
 /// Returns the current wall-clock time as `(hours, minutes, seconds)` (0..23,
@@ -54,7 +88,7 @@ pub fn wall_clock() -> Option<(u32, u32, u32)> {
     let elapsed = boot_secs().wrapping_sub(snap);
     // `base + elapsed` is UTC; shift to the configured local timezone for the
     // clock face (offset in whole hours, can be negative west of Greenwich).
-    let offset_secs = crate::config::TIME.gmt_offset_hours as i64 * 3600;
+    let offset_secs = gmt_offset() as i64 * 3600;
     let total =
         (base as i64 + elapsed as i64 + offset_secs).rem_euclid(86_400) as u64;
     Some(((total / 3600) as u32, ((total % 3600) / 60) as u32, (total % 60) as u32))

@@ -55,6 +55,8 @@ pub enum Prev {
 /// player and start on the settings screen after looping the embedded intro.
 pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChannel) -> ! {
     let mut brightness = crate::storage::load_brightness();
+    // Restore the persisted timezone offset so the clock honours it on boot.
+    crate::time::init_gmt_offset();
 
     // `None` when the SD card is unusable / has no faces.
     let mut player = face_player::Player::new(driver);

@@ -90,6 +90,32 @@ static SCAN_REQUEST: AtomicU8 = AtomicU8::new(0);
 static SCAN_READY: AtomicU8 = AtomicU8::new(0);
 /// 1 = HTTP just saved new credentials; driver must re-apply station config.
 static NET_UPDATE: AtomicU8 = AtomicU8::new(0);
+/// 1 = user disabled Wi-Fi from the settings screen; the driver idles instead
+/// of trying to connect to any network. Set/cleared via [`set_wifi_enabled`].
+static WIFI_ENABLED: AtomicU8 = AtomicU8::new(1);
+/// 1 = user asked to force the SoftAP provisioning mode back up so they can
+/// join it with a phone and pick/change the network. Cleared by the driver
+/// when the AP is brought up.
+static FORCE_AP: AtomicU8 = AtomicU8::new(0);
+
+/// Public on/off control used by the settings screen. `true` keeps the STA
+/// connect loop running; `false` makes the driver idle (STA off, no connect).
+pub fn set_wifi_enabled(on: bool) {
+    WIFI_ENABLED.store(on as u8, Ordering::Release);
+    println!("[wifi] user set Wi-Fi {}", if on { "ON" } else { "OFF" });
+}
+
+/// Current user Wi-Fi on/off state (see [`set_wifi_enabled`]).
+pub fn wifi_enabled() -> bool {
+    WIFI_ENABLED.load(Ordering::Acquire) != 0
+}
+
+/// Ask the driver to bring the SoftAP provisioning mode back up so the user
+/// can join `DasaiSetup` and connect to a different network.
+pub fn request_force_ap() {
+    FORCE_AP.store(1, Ordering::Release);
+    println!("[wifi] force-AP requested by user");
+}
 
 type ScanResult = HeaplessVec<AccessPointInfo, MAX_APS>;
 
@@ -233,15 +259,42 @@ async fn wifi_driver(mut controller: WifiController<'static>, ap_enabled_initial
     // Starts with the SoftAP up (provisioning mode).  Once the STA connects to a
     // real network we power the SoftAP down so the radio is free.
     let mut ap_enabled = ap_enabled_initial;
+    // Set when the user requests re-provisioning from the settings screen; while
+    // set we serve only the SoftAP (no STA connect) until new credentials arrive.
+    let mut force_ap_mode = false;
     let mut net_list = storage::load_all_wifi_creds();
     let mut idx = 0usize;
 
     loop {
+        // 0) User controls from the settings screen.
+        if take_flag(&FORCE_AP) {
+            // Bring the SoftAP provisioning mode back up so the user can join
+            // `DasaiSetup` with a phone and change the network.
+            println!("[wifi] forcing SoftAP provisioning mode");
+            let _ = controller.set_config(&Config::AccessPointStation(
+                StationConfig::default(),
+                AccessPointConfig::default().with_ssid(AP_SSID.try_into().unwrap()),
+            ));
+            ap_enabled = true;
+            force_ap_mode = true;
+        }
+
+        // If the user disabled Wi-Fi, idle (keep whatever radio state we have)
+        // instead of scanning / retrying the STA. We still poll the control
+        // flags so a "re-enable" or "force AP" is picked up promptly.
+        if !wifi_enabled() {
+            Timer::after(Duration::from_millis(200)).await;
+            continue;
+        }
+
         // 1) Provisioning-only work while the SoftAP is still up.
         if ap_enabled {
             if take_flag(&NET_UPDATE) {
                 net_list = storage::load_all_wifi_creds();
                 idx = 0;
+                // New credentials saved via the portal: exit forced-AP mode and
+                // let the normal connect loop pick the best network.
+                force_ap_mode = false;
                 let conf = match net_list.first() {
                     Some(c) => net_config(ap_enabled, c),
                     None => Config::AccessPointStation(
@@ -264,6 +317,14 @@ async fn wifi_driver(mut controller: WifiController<'static>, ap_enabled_initial
                 SCAN_READY.store(1, Ordering::Release);
                 println!("[wifi] scan done");
             }
+        }
+
+        // While forcibly re-provisioning, serve the SoftAP and wait for the user
+        // to save credentials; don't try to auto-connect to a saved network that
+        // would take the AP back down.
+        if force_ap_mode {
+            Timer::after(Duration::from_millis(200)).await;
+            continue;
         }
 
         // 2) (Re)load the saved networks if we don't have them yet.
