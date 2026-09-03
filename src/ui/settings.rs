@@ -282,13 +282,19 @@ fn draw_timezone_edit(display: &mut screen::Display) {
     draw_edit_hint(display);
 }
 
-/// Wi-Fi on/off tile edit mode. `tap`/`press` toggles, applied live; `double`
-/// confirms (state is module-global, so nothing extra to persist); `triple`
-/// returns to the list without further change.
+/// Wi-Fi on/off tile edit mode. Shows the current ON/OFF state plus the SSID
+/// of the network currently connected (scrolling as a marquee if it's too long
+/// to fit). `tap`/`press` toggles Wi-Fi; `double`/`triple` returns to the list.
 async fn edit_wifi(display: &mut screen::Display, tap: &'static TapChannel) {
     loop {
-        draw_wifi_edit(display);
-        match tap::wait_tap(tap).await {
+        // Render the floor, then briefly scroll the connected SSID (a tap
+        // during the scroll is detected and used as the gesture).
+        let early = animate_ssid_marquee(display, tap).await;
+        let gesture = match early {
+            Some(g) => g,
+            None => tap::wait_tap(tap).await,
+        };
+        match gesture {
             Gesture::Tap | Gesture::Press => {
                 crate::wifi::set_wifi_enabled(!crate::wifi::wifi_enabled());
             }
@@ -297,21 +303,99 @@ async fn edit_wifi(display: &mut screen::Display, tap: &'static TapChannel) {
     }
 }
 
-/// Render the Wi-Fi on/off edit screen.
-fn draw_wifi_edit(display: &mut screen::Display) {
+/// Render the Wi-Fi screen then animate the connected SSID (if any) as a
+/// marquee for a short while. Returns a gesture if the user touched during the
+/// scroll, `None` otherwise.
+async fn animate_ssid_marquee(display: &mut screen::Display, tap: &'static TapChannel) -> Option<Gesture> {
+    display.set_text_size(1);
+    display.set_font(&FONT_5X7);
+
+    // Window the marquee scrolls through: after the "SSID:" label, up to the
+    // right margin.
+    let label_w = 30i16; // "SSID:" = 5 glyphs * 6px
+    let win_x = 2i16 + label_w;
+    let win_w = (config::SCREEN_WIDTH as i16 - 2 - win_x).max(0) as u16;
+    let y = 30i16;
+
+    let ssid = crate::wifi::connected_ssid();
+    let Some(ssid) = ssid else {
+        // Not connected: just show that and pause briefly.
+        render_wifi_screen(display, "Not connected");
+        embassy_time::Timer::after_millis(800).await;
+        return None;
+    };
+
+    let (tw, _) = display.measure_text_with(&ssid, &FONT_5X7);
+    if tw as i16 <= win_w as i16 {
+        // Fits in the window: show it statically, short pause, done.
+        render_wifi_screen(display, &ssid);
+        embassy_time::Timer::after_millis(1200).await;
+        return None;
+    }
+
+    // Too long to fit — scroll the whole string through the window.
+    let full = tw as i16 + win_w as i16;
+    let mut offset = 0i16;
+    loop {
+        render_wifi_marquee(display, &ssid, offset, win_x, win_w, y);
+        embassy_time::Timer::after_millis(30).await;
+        if let Some(g) = tap::try_tap(tap) {
+            return Some(g);
+        }
+        offset += 2;
+        if offset >= full {
+            break;
+        }
+    }
+    // Rest at the start of the string.
+    render_wifi_screen(display, &ssid);
+    None
+}
+
+/// Draw the static Wi-Fi floor (title, ON/OFF) plus a value shown after the
+/// "SSID:" label.
+fn render_wifi_screen(display: &mut screen::Display, value: &str) {
+    display.clear_buffer();
+    screen_edit_base(display, "Wi-Fi");
+    display.set_text_color(true);
+
+    // ON/OFF line under the title.
+    let on = crate::wifi::wifi_enabled();
+    let st = if on { "Status: ON" } else { "Status: OFF" };
+    display.draw_str_with(2, 14, st, &FONT_5X7);
+
+    // "SSID:" label + value (clipped by the panel if too long).
+    display.draw_str_with(2, 30, "SSID:", &FONT_5X7);
+    display.draw_str_with(2 + 30, 30, value, &FONT_5X7);
+
+    draw_edit_hint(display);
+    let _ = display.flush();
+}
+
+/// Draw the static Wi-Fi floor plus the SSID scrolled by `offset` px through a
+/// `win_w`-wide window at `(win_x, y)`.
+#[allow(clippy::too_many_arguments)]
+fn render_wifi_marquee(
+    display: &mut screen::Display,
+    ssid: &str,
+    offset: i16,
+    win_x: i16,
+    win_w: u16,
+    y: i16,
+) {
     display.clear_buffer();
     screen_edit_base(display, "Wi-Fi");
     display.set_text_color(true);
 
     let on = crate::wifi::wifi_enabled();
-    let s = if on { "ON" } else { "OFF" };
-    let w = s.len() as i16 * 12; // 2x scale for a clear readout
-    display.set_text_size(2);
-    let x = (config::SCREEN_WIDTH as i16 - w) / 2;
-    display.draw_str_with(x, 24, s, &FONT_5X7);
+    let st = if on { "Status: ON" } else { "Status: OFF" };
+    display.draw_str_with(2, 14, st, &FONT_5X7);
 
-    display.set_text_size(1);
+    display.draw_str_with(2, y, "SSID:", &FONT_5X7);
+    display.scroll_text_frame(win_x, y, ssid, win_w, offset, &FONT_5X7);
+
     draw_edit_hint(display);
+    let _ = display.flush();
 }
 
 /// Force-AP action tile: bring the SoftAP back up and show a short

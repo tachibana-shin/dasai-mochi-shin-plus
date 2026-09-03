@@ -135,6 +135,51 @@ fn take_flag(flag: &AtomicU8) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Connected SSID (shown by the Wi-Fi tile in the settings screen)
+// ---------------------------------------------------------------------------
+
+/// 1 = [`CONNECTED_SSID`] holds a valid, currently-connected network name.
+static SSID_VALID: AtomicU8 = AtomicU8::new(0);
+/// Bytes of the currently connected SSID (single-threaded executor, guarded by
+/// [`SSID_VALID`]). Sized for the longest legal SSID (32 bytes) + NUL.
+static mut CONNECTED_SSID_BUF: [u8; 33] = [0; 33];
+
+/// The SSID the STA is currently connected to, if any. Cleared as soon as the
+/// link drops, so a value here means a live connection.
+pub fn connected_ssid() -> Option<heapless::String<32>> {
+    if SSID_VALID.load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    #[allow(static_mut_refs)]
+    // SAFETY: single-threaded executor; each read is sequenced after the other
+    // side's `SSID_VALID` store/clear (happens-before via the atomic flag).
+    let bytes = unsafe { &CONNECTED_SSID_BUF[..] };
+    let nul = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let s = core::str::from_utf8(&bytes[..nul]).ok()?;
+    heapless::String::try_from(s).ok()
+}
+
+/// Record the SSID we just connected to. Called by the driver on a successful
+/// connect.
+fn set_connected_ssid(ssid: &[u8]) {
+    #[allow(static_mut_refs)]
+    // SAFETY: single-threaded executor; `SSID_VALID.store` below publishes the
+    // buffer contents to any concurrent reader in the same (single) task.
+    unsafe {
+        let buf = &mut CONNECTED_SSID_BUF;
+        buf.fill(0);
+        let n = ssid.len().min(buf.len() - 1);
+        buf[..n].copy_from_slice(&ssid[..n]);
+    }
+    SSID_VALID.store(1, Ordering::Release);
+}
+
+/// Clear the connected-SSID record (e.g. when the link drops or WiFi is off).
+fn clear_connected_ssid() {
+    SSID_VALID.store(0, Ordering::Release);
+}
+
+// ---------------------------------------------------------------------------
 // Static helper macro
 // ---------------------------------------------------------------------------
 
@@ -283,6 +328,7 @@ async fn wifi_driver(mut controller: WifiController<'static>, ap_enabled_initial
         // instead of scanning / retrying the STA. We still poll the control
         // flags so a "re-enable" or "force AP" is picked up promptly.
         if !wifi_enabled() {
+            clear_connected_ssid();
             Timer::after(Duration::from_millis(200)).await;
             continue;
         }
@@ -371,6 +417,7 @@ async fn wifi_driver(mut controller: WifiController<'static>, ap_enabled_initial
         if !confident {
             // All networks failed this round — back off, then retry from the top.
             println!("[wifi] all {} network(s) failed, retrying in 10s", n);
+            clear_connected_ssid();
             idx = 0;
             Timer::after(Duration::from_secs(10)).await;
             continue;
@@ -378,6 +425,7 @@ async fn wifi_driver(mut controller: WifiController<'static>, ap_enabled_initial
 
         // 4) Connected to net_list[idx].
         println!("[wifi] STA connected to `{}`", net_list[idx].ssid);
+        set_connected_ssid(net_list[idx].ssid.as_bytes());
         if ap_enabled {
             // We have a real network now: turn the SoftAP off once.
             println!("[wifi] turning SoftAP off");
@@ -390,6 +438,7 @@ async fn wifi_driver(mut controller: WifiController<'static>, ap_enabled_initial
             // AP already off: hold the link until the network drops, then the
             // next attempt moves on to another saved network if needed.
             let _ = controller.wait_for_disconnect_async().await;
+            clear_connected_ssid();
             idx = (idx + 1) % n;
         }
     }
