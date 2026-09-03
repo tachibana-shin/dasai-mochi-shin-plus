@@ -9,8 +9,8 @@
 //! - **triple-tap** – back out to the face player.
 //! - **press** – reserved.
 //!
-//! Edit mode is tile-specific. The value tiles (brightness, timezone, Wi-Fi,
-//! clock face) all follow the same pattern:
+//! Edit mode is tile-specific. The value tiles (brightness, timezone, Wi-Fi)
+//! all follow the same pattern:
 //! - **tap** – step the value up (wrapping at the top back to the bottom).
 //! - **hold** – auto-repeat (the sensor task publishes repeated `Press` events
 //!   while the touch is held past the press threshold).
@@ -91,7 +91,7 @@ pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brigh
                 TileKind::Brightness => edit_brightness(display, tap, brightness).await,
                 TileKind::Timezone => edit_timezone(display, tap).await,
                 TileKind::WifiToggle => edit_wifi(display, tap).await,
-                TileKind::ClockFace => edit_clock_face(display, tap).await,
+                TileKind::ClockFace => toggle_clock_face(display).await,
                 TileKind::ForceAp => trigger_force_ap(display).await,
             },
             Gesture::TripleTap => return Screen::FacePlayer,
@@ -438,51 +438,32 @@ fn render_wifi_marquee(
     let _ = display.flush();
 }
 
-/// Clock-face style tile edit mode. `tap`/`press` toggles between Analog and
-/// Digital (applied live); `double` persists the choice, `triple` cancels.
-async fn edit_clock_face(display: &mut screen::Display, tap: &'static TapChannel) {
-    loop {
-        draw_clock_face_edit(display);
-        match tap::wait_tap(tap).await {
-            Gesture::Tap | Gesture::Press => {
-                let next = match clock::clock_style() {
-                    ClockStyle::Analog => ClockStyle::Digital,
-                    ClockStyle::Digital => ClockStyle::Analog,
-                };
-                clock::set_clock_style(next); // live preview, not yet persisted
-            }
-            Gesture::DoubleTap => {
-                clock::persist_clock_style(clock::clock_style()); // persist on save
-                return;
-            }
-            Gesture::TripleTap => {
-                // Cancel: revert to the last-persisted style.
-                clock::set_clock_style(match crate::storage::load_clock_style() {
-                    1 => ClockStyle::Digital,
-                    _ => ClockStyle::Analog,
-                });
-                return;
-            }
-        }
-    }
-}
+/// Clock-face tile action: flip Analog ↔ Digital and persist immediately, then
+/// show a brief confirmation. Double-tapping the tile in the list is all it
+/// takes — no separate edit screen for a two-way switch.
+async fn toggle_clock_face(display: &mut screen::Display) {
+    let next = match clock::clock_style() {
+        ClockStyle::Analog => ClockStyle::Digital,
+        ClockStyle::Digital => ClockStyle::Analog,
+    };
+    clock::persist_clock_style(next);
 
-/// Render the clock-face edit screen: title plus a large current-style label.
-fn draw_clock_face_edit(display: &mut screen::Display) {
+    // Brief confirmation showing the new style.
     display.clear_buffer();
     screen_edit_base(display, "Clock Face");
     display.set_text_color(true);
-
-    let (label, w) = match clock::clock_style() {
+    let (label, w) = match next {
         ClockStyle::Analog => ("Analog", 6 * 12),
         ClockStyle::Digital => ("Digital", 7 * 12),
     };
     let x = (config::SCREEN_WIDTH as i16 - w) / 2;
     display.set_text_size(2);
     display.draw_str_with(x, 24, label, &FONT_5X7);
-
     display.set_text_size(1);
-    draw_edit_hint(display);
+    display.draw_str_with(4, 40, "saved", &FONT_5X7);
+    let _ = display.flush();
+
+    embassy_time::Timer::after_millis(700).await;
 }
 
 /// Force-AP action tile: bring the SoftAP back up and show a short
