@@ -44,6 +44,12 @@ static_cell = "2.1"
 log = { version = "0.4", default-features = false }
 # Heap for the embassy executor / async tasks (provides the #[global_allocator]).
 esp-alloc = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c9240a08b35cb6bfab7eff8cf336cb2797d07946", package = "esp-alloc", version = "0.11", features = ["esp32c3"] }
+# DHCP server on the provisioning SoftAP (so a phone gets an IP automatically),
+# plus its edge-nal glue pair (edge-nal 0.7 / edge-nal-embassy 0.9 as used by the
+# official esp-radio AP example).
+edge-dhcp = "0.8.0"
+edge-nal = "0.7.0"
+edge-nal-embassy = "0.9.0"
 embassy-executor    = { version = "0.10" }
 embassy-sync              = { version = "0.8" }
 embassy-time              = { version = "0.5" }
