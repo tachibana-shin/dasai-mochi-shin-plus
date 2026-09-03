@@ -9,14 +9,12 @@
 //! - **HTTP intercept**: the HTTP server answers any request whose `Host` is not
 //!   `192.168.4.1` with a `302 Found` redirect to `http://192.168.4.1/`, so a
 //!   browser that opens any page gets pushed to the setup screen.
-//! - **Setup UI**: the page performs a real Wi-Fi scan (via the radio) and shows
-//!   the detected networks as a list (like a phone's Wi-Fi settings screen):
-//!   name, signal strength and a lock icon for secured networks. The user picks
-//!   a network and types its password; the device saves credentials to flash and
-//!   reboots.
+//! - **Setup UI**: `GET /` serves an SSID + password form with a "Quét lại"
+//!   button; `GET /scan` runs a background Wi-Fi scan; `POST /` saves the
+//!   credentials to flash and connects immediately (no reboot).
 //!
-//! After reboot the STA auto-connects to the saved network while the SoftAP
-//! stays up for later re-provisioning.
+//! After saving credentials the STA connects to the network right away while
+//! the SoftAP stays up for later re-provisioning.
 
 use core::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -47,27 +45,44 @@ const GW_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 4, 1);
 const GW_IP_STR: &[u8] = b"192.168.4.1";
 const HTTP_PORT: u16 = 80;
 const MAX_APS: usize = 40;
+/// Hard cap on how long a scan may take before we give up (avoids hanging the
+/// driver when the radio is busy serving the SoftAP).
+const SCAN_TIMEOUT: Duration = Duration::from_secs(6);
+/// How long `wifi_driver` may spend on a STA connect before dropping back to
+/// check for scan / reconfigure requests.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 // ---------------------------------------------------------------------------
-// Scan coordination — atomic flags + shared buffer (no embassy-sync channels)
+// Cross-task coordination — atomic flags + shared buffers.
+//
+// All traffic happens on a single-threaded executor, so plain statics guarded
+// by atomic "happens-before" flags are safe and avoid any channel/critical-
+// section dependency (which froze at boot on this RISC-V chip).
 // ---------------------------------------------------------------------------
 
-/// 0 = idle, 1 = scan requested, 2 = scan complete
-static SCAN_STATE: AtomicU8 = AtomicU8::new(0);
+/// 1 = HTTP server wants a fresh scan.  Cleared by the driver when done.
+static SCAN_REQUEST: AtomicU8 = AtomicU8::new(0);
+/// 1 = latest scan result is available in [`SCAN_CACHE`].
+static SCAN_READY: AtomicU8 = AtomicU8::new(0);
+/// 1 = HTTP just saved new credentials; driver must re-apply station config.
+static NET_UPDATE: AtomicU8 = AtomicU8::new(0);
 
-/// Shared scan result buffer.  Written by `wifi_driver`, read by
-/// `provision_server`.  The write happens-before the atomic store to
-/// `SCAN_STATE = 2`, and the read happens-after the load of `SCAN_STATE == 2`,
-/// so the data is visible without a mutex (single-threaded executor).
 type ScanResult = HeaplessVec<AccessPointInfo, MAX_APS>;
 
-// Safe: ESP32-C3 is single-threaded; access is sequenced via atomic flags.
+// Single-threaded executor → safe as long as access is sequenced via the
+// atomic flags above.
 #[allow(static_mut_refs)]
-static mut SCAN_RESULT: ScanResult = HeaplessVec::new();
+static mut SCAN_CACHE: ScanResult = HeaplessVec::new();
 
-const STATE_IDLE: u8 = 0;
-const STATE_REQUESTED: u8 = 1;
-const STATE_READY: u8 = 2;
+/// Constant-style "set if 1 then clear" (atomic exchange wrapper for targets
+/// where `AtomicU8::swap` isn't available).  Returns the previous value.
+fn take_flag(flag: &AtomicU8) -> bool {
+    // Single-threaded executor: no true concurrent writers, so a simple
+    // load-and-store is sufficient and avoids unavailable RMW intrinsics.
+    let was_set = flag.load(Ordering::Acquire) == 1;
+    flag.store(0, Ordering::Release);
+    was_set
+}
 
 // ---------------------------------------------------------------------------
 // Static helper macro
@@ -87,24 +102,33 @@ macro_rules! mk_static {
 // ---------------------------------------------------------------------------
 
 pub fn spawn(spawner: Spawner, wi_fi: esp_hal::peripherals::WIFI<'static>) {
-    let saved = storage::load_wifi_creds();
+    let creds = storage::load_all_wifi_creds();
 
-    let station = match &saved {
-        Some(creds) => StationConfig::default()
-            .with_ssid(creds.ssid.as_bytes().try_into().unwrap())
-            .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
-                creds.password.as_bytes().try_into().unwrap(),
-            )),
+    let has_creds = !creds.is_empty();
+    let initial_station = match creds.first() {
+        Some(c) => station_from(c),
         None => StationConfig::default(),
     };
     let access_point = AccessPointConfig::default().with_ssid(AP_SSID.try_into().unwrap());
-    let initial_config = Config::AccessPointStation(station, access_point);
-
-    println!("[wifi] starting radio, SoftAP `{AP_SSID}` at http://{}", GW_IP);
-    if let Some(creds) = &saved {
-        println!("[wifi] auto-connecting to `{}`", creds.ssid);
+    // The SoftAP only turns on when there are no saved credentials (fresh setup).
+    // Once credential exist we boot straight into STA mode only — no AP.
+    // When there are no creds yet we bring up the AP *and* an (empty) station
+    // interface (APSTA mode): the radio must be in a combined mode for a Wi-Fi
+    // scan to actually work on this single-radio chip while serving the SoftAP.
+    let empty_station = StationConfig::default();
+    let initial_config = if has_creds {
+        Config::Station(initial_station)
     } else {
-        println!("[wifi] no saved network: join `{AP_SSID}` and open any page");
+        Config::AccessPointStation(empty_station, access_point.clone())
+    };
+
+    if has_creds {
+        println!("[wifi] {} saved network(s): STA-only, no SoftAP", creds.len());
+        for (i, c) in creds.iter().enumerate() {
+            println!("[wifi]   {}. {}", i + 1, c.ssid);
+        }
+    } else {
+        println!("[wifi] no saved network: SoftAP `{AP_SSID}` at http://{}", GW_IP);
     }
 
     let ap_device = Interface::access_point();
@@ -137,7 +161,7 @@ pub fn spawn(spawner: Spawner, wi_fi: esp_hal::peripherals::WIFI<'static>) {
         seed,
     );
 
-    spawner.spawn(wifi_driver(controller).unwrap());
+    spawner.spawn(wifi_driver(controller, !has_creds).unwrap());
     spawner.spawn(net_task(ap_runner).unwrap());
     spawner.spawn(net_task(sta_runner).unwrap());
     spawner.spawn(dhcp_task(ap_stack).unwrap());
@@ -146,42 +170,162 @@ pub fn spawn(spawner: Spawner, wi_fi: esp_hal::peripherals::WIFI<'static>) {
 }
 
 // ---------------------------------------------------------------------------
-// Wi-Fi driver task — handles STA connect + scan requests
+// Wi-Fi driver — owns the controller, serves scans + reconfiguration, and
+// keeps the STA connected.  Runs on the single-threaded executor.
 // ---------------------------------------------------------------------------
 
+fn station_from(creds: &storage::WifiCreds) -> StationConfig {
+    StationConfig::default()
+        .with_ssid(creds.ssid.as_bytes().try_into().unwrap())
+        .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+            creds.password.as_bytes().try_into().unwrap(),
+        ))
+}
+
+/// Build the Wi-Fi `Config` for a given network, keeping the SoftAP up only
+/// while it is still enabled (provisioning).
+fn net_config(ap_enabled: bool, creds: &storage::WifiCreds) -> Config {
+    let station = station_from(creds);
+    if ap_enabled {
+        let ap = AccessPointConfig::default().with_ssid(AP_SSID.try_into().unwrap());
+        Config::AccessPointStation(station, ap)
+    } else {
+        Config::Station(station)
+    }
+}
+
 #[embassy_executor::task]
-async fn wifi_driver(mut controller: WifiController<'static>) -> ! {
+async fn wifi_driver(mut controller: WifiController<'static>, ap_enabled_initial: bool) -> ! {
+    // Starts with the SoftAP up (provisioning mode).  Once the STA connects to a
+    // real network we power the SoftAP down so the radio is free.
+    let mut ap_enabled = ap_enabled_initial;
+    let mut net_list = storage::load_all_wifi_creds();
+    let mut idx = 0usize;
+
     loop {
-        // Serve scan requests from the HTTP server.
-        if SCAN_STATE.load(Ordering::Acquire) == STATE_REQUESTED {
-            let mut list: ScanResult = HeaplessVec::new();
-            if let Ok(aps) = controller.scan_async(&ScanConfig::default()).await {
-                for ap in aps {
-                    if list.push(ap).is_err() {
-                        break;
-                    }
+        // 1) Provisioning-only work while the SoftAP is still up.
+        if ap_enabled {
+            if take_flag(&NET_UPDATE) {
+                net_list = storage::load_all_wifi_creds();
+                idx = 0;
+                let conf = match net_list.first() {
+                    Some(c) => net_config(ap_enabled, c),
+                    None => Config::AccessPointStation(
+                        StationConfig::default(),
+                        AccessPointConfig::default()
+                            .with_ssid(AP_SSID.try_into().unwrap()),
+                    ),
+                };
+                println!("[wifi] applying updated station config");
+                let _ = controller.set_config(&conf);
+                SCAN_REQUEST.store(1, Ordering::Release); // refresh list for next page load
+            }
+
+            if take_flag(&SCAN_REQUEST) {
+                let scan = scan_aps(&mut controller).await;
+                #[allow(static_mut_refs)]
+                unsafe {
+                    SCAN_CACHE = scan;
                 }
+                SCAN_READY.store(1, Ordering::Release);
+                println!("[wifi] scan done");
             }
-            // Publish result.
-            // SAFETY: single-threaded executor, sequenced by atomic flag.
-            #[allow(static_mut_refs)]
-            unsafe {
-                SCAN_RESULT = list;
-            }
-            SCAN_STATE.store(STATE_READY, Ordering::Release);
+        }
+
+        // 2) (Re)load the saved networks if we don't have them yet.
+        if net_list.is_empty() {
+            net_list = storage::load_all_wifi_creds();
+        }
+        if net_list.is_empty() {
+            // No saved networks: provisioning mode, nothing to connect to.
+            Timer::after(Duration::from_millis(100)).await;
             continue;
         }
 
-        // Normal STA operation: try to connect, reconnect on failure.
-        match controller.connect_async().await {
-            Ok(_) => {
-                let _ = controller.wait_for_disconnect_async().await;
+        // 3) Try each saved network in turn until one connects.
+        let n = net_list.len();
+        let start = idx % n;
+        let confident = 'outer: loop {
+            let i = idx % n;
+            let conf = net_config(ap_enabled, &net_list[i]);
+            println!(
+                "[wifi] trying `{}` ({}/{})",
+                net_list[i].ssid, i + 1, n
+            );
+            let _ = controller.set_config(&conf);
+
+            match embassy_futures::select::select(
+                controller.connect_async(),
+                Timer::after(CONNECT_TIMEOUT),
+            )
+            .await
+            {
+                embassy_futures::select::Either::First(Ok(_)) => {
+                    idx = i;
+                    break 'outer true;
+                }
+                embassy_futures::select::Either::First(Err(_)) | embassy_futures::select::Either::Second(_) => {
+                    idx = (i + 1) % n;
+                    if idx == start {
+                        break 'outer false; // tried every network this pass
+                    }
+                }
             }
-            Err(_) => {
-                Timer::after(Duration::from_millis(500)).await;
-            }
+        };
+
+        if !confident {
+            // All networks failed this round — back off, then retry from the top.
+            println!("[wifi] all {} network(s) failed, retrying in 10s", n);
+            idx = 0;
+            Timer::after(Duration::from_secs(10)).await;
+            continue;
+        }
+
+        // 4) Connected to net_list[idx].
+        println!("[wifi] STA connected to `{}`", net_list[idx].ssid);
+        if ap_enabled {
+            // We have a real network now: turn the SoftAP off once.
+            println!("[wifi] turning SoftAP off");
+            let _ = controller.set_config(&net_config(false, &net_list[idx]));
+            ap_enabled = false;
+            // set_config resets the radio and drops the link; give it a moment,
+            // then the next loop reconnects without the AP.
+            Timer::after(Duration::from_millis(500)).await;
+        } else {
+            // AP already off: hold the link until the network drops, then the
+            // next attempt moves on to another saved network if needed.
+            let _ = controller.wait_for_disconnect_async().await;
+            idx = (idx + 1) % n;
         }
     }
+}
+
+/// Run one Wi-Fi scan, bounded by [`SCAN_TIMEOUT`].  Returns an empty list on
+/// timeout/error (the radio may be busy serving the SoftAP, in which case no
+/// scan is possible — the setup form still lets the user type an SSID).
+async fn scan_aps(controller: &mut WifiController<'static>) -> ScanResult {
+    let mut list: ScanResult = HeaplessVec::new();
+    let config = ScanConfig::default();
+    println!("[wifi] scan starting (timeout {}s)...", SCAN_TIMEOUT.as_secs() as u32);
+    let ctrl = controller.scan_async(&config);
+    match embassy_futures::select::select(ctrl, Timer::after(SCAN_TIMEOUT)).await {
+        embassy_futures::select::Either::First(Ok(aps)) => {
+            let n = aps.len();
+            for ap in aps {
+                if list.push(ap).is_err() {
+                    break;
+                }
+            }
+            println!("[wifi] scan found {} APs", n);
+        }
+        embassy_futures::select::Either::First(Err(e)) => {
+            println!("[wifi] scan error: {e:?}");
+        }
+        embassy_futures::select::Either::Second(_) => {
+            println!("[wifi] scan timed out ({}s)", SCAN_TIMEOUT.as_secs() as u32);
+        }
+    }
+    list
 }
 
 #[embassy_executor::task(pool_size = 2)]
@@ -266,7 +410,6 @@ fn build_dns_response(req: &[u8], out: &mut [u8]) -> usize {
     if req.len() < 12 {
         return 0;
     }
-    // Copy transaction ID and set response flags.
     out[0..2].copy_from_slice(&req[0..2]);
     out[2] = 0x81;
     out[3] = 0x80;
@@ -274,7 +417,6 @@ fn build_dns_response(req: &[u8], out: &mut [u8]) -> usize {
     out[6..8].copy_from_slice(&[0x00, 0x01]); // ANCOUNT
     out[8..12].fill(0);
 
-    // Walk the QNAME (label sequence terminated by 0x00).
     let qstart = 12;
     let mut i = qstart;
     loop {
@@ -296,14 +438,12 @@ fn build_dns_response(req: &[u8], out: &mut [u8]) -> usize {
     if 12 + qname_len + 4 > out.len() {
         return 0;
     }
-    // Echo question.
     out[12..12 + qname_len].copy_from_slice(&req[qstart..i]);
     let mut pos = 12 + qname_len;
     if i + 4 <= req.len() {
-        out[pos..pos + 4].copy_from_slice(&req[i..i + 4]); // QTYPE + QCLASS
+        out[pos..pos + 4].copy_from_slice(&req[i..i + 4]);
         pos += 4;
     }
-    // Answer: pointer to echoed name, type A, class IN, TTL 60s, GW_IP.
     out[pos..pos + 2].copy_from_slice(&[0xC0, 0x0C]);
     pos += 2;
     out[pos..pos + 2].copy_from_slice(&[0x00, 0x01]); // TYPE A
@@ -320,7 +460,7 @@ fn build_dns_response(req: &[u8], out: &mut [u8]) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP provision server with scan-driven Wi-Fi list + captive-portal intercept.
+// HTTP provision server — captive-portal intercept + setup UI.
 // ---------------------------------------------------------------------------
 
 #[embassy_executor::task]
@@ -364,20 +504,45 @@ async fn provision_server(stack: embassy_net::Stack<'static>) -> ! {
 
         let req = &buf[..pos];
         let is_post = req.starts_with(b"POST");
+        // Log the request line (first line up to CRLF) for debugging.
+        let first_line = core::str::from_utf8(
+            req.split(|&b| b == b'\n').next().unwrap_or(b""),
+        )
+        .unwrap_or("?");
+        println!("[wifi] HTTP {first_line} ({})", req.len());
 
-        if is_post {
+        if is_post_path(req, b"/remove") {
+            // Fetch API: remove a saved network by SSID (form-encoded `ssid=`).
+            // After a successful removal, tell the driver to drop that network
+            // and refresh its connection list.
+            let mut ssid = heapless::String::<32>::new();
+            let mut _pw = heapless::String::<64>::new();
+            parse_form(body_slice(req).unwrap_or(&[]), &mut ssid, &mut _pw);
+            let removed = storage::remove_wifi_creds(ssid.as_str());
+            println!("[wifi] HTTP /remove `{}` -> removed={}", ssid, removed);
+            // Ask the driver to reload the saved list and drop the removed
+            // network (re-apply station/AP config as needed).
+            NET_UPDATE.store(1, Ordering::Release);
+            let _ = socket.write_all(HTTP_JSON).await;
+            serve_remove_json(&mut socket, removed).await;
+        } else if is_post {
             let mut ssid = heapless::String::<32>::new();
             let mut password = heapless::String::<64>::new();
             parse_form(body_slice(req).unwrap_or(&[]), &mut ssid, &mut password);
+            println!(
+                "[wifi] POST parsed ssid=`{}` pass_len={}",
+                ssid,
+                password.len()
+            );
 
             if !ssid.is_empty() && (password.is_empty() || password.len() >= 8) {
                 let creds = storage::WifiCreds { ssid, password };
                 storage::save_wifi_creds(&creds);
-                println!("[wifi] saved `{}`, rebooting...", creds.ssid);
+                // Ask the driver to apply the new config and connect — no reboot.
+                NET_UPDATE.store(1, Ordering::Release);
+                println!("[wifi] saved `{}`, connecting...", creds.ssid);
                 let _ = socket.write_all(RESP_SAVED.as_bytes()).await;
                 let _ = socket.flush().await;
-                Timer::after(Duration::from_millis(200)).await;
-                esp_hal::system::software_reset();
             } else {
                 let _ = socket.write_all(RESP_BAD.as_bytes()).await;
                 let _ = socket.flush().await;
@@ -385,71 +550,108 @@ async fn provision_server(stack: embassy_net::Stack<'static>) -> ! {
         } else if !is_local_host(req) {
             // Captive portal: redirect any other host to our setup page.
             let _ = socket.write_all(REDIRECT).await;
+        } else if is_path(req, b"/scan") {
+            // Fetch API: trigger a fresh scan, wait (bounded) for it, then
+            // return the result as JSON.  The page's JS fills the list in
+            // place — no full-page reload.
+            println!("[wifi] HTTP /scan (fetch)");
+            SCAN_REQUEST.store(1, Ordering::Release);
+            let deadline = embassy_time::Instant::now() + Duration::from_secs(5);
+            while SCAN_READY.load(Ordering::Acquire) == 0
+                && embassy_time::Instant::now() < deadline
+            {
+                Timer::after(Duration::from_millis(50)).await;
+            }
+            let scan = read_scan_cache();
+            let _ = socket.write_all(HTTP_JSON).await;
+            serve_scan_json(&mut socket, &scan).await;
+        } else if is_path(req, b"/saved") {
+            // Fetch API: return the list of saved networks as JSON so the page
+            // can render them (and let the user remove entries).
+            println!("[wifi] HTTP /saved");
+            let _ = socket.write_all(HTTP_JSON).await;
+            serve_saved_json(&mut socket).await;
         } else {
-            // Local request: serve the scan-driven Wi-Fi list.
-            let scan = request_scan().await;
+            // Local /: serve the setup page (JS loads the network list via
+            // fetch("/scan") itself — never blocks the page render).
             let _ = socket.write_all(HTTP_200).await;
-            serve_wifi_list(&mut socket, &scan).await;
+            let _ = socket.write_all(PAGE_HTML.as_bytes()).await;
         }
+
         let _ = socket.flush().await;
         socket.close();
         Timer::after(Duration::from_millis(150)).await;
     }
 }
 
-/// Request a Wi-Fi scan from the driver task and wait for the result.
-async fn request_scan() -> ScanResult {
-    SCAN_STATE.store(STATE_REQUESTED, Ordering::Release);
-    // Poll until the driver publishes the result.
-    while SCAN_STATE.load(Ordering::Acquire) != STATE_READY {
-        Timer::after(Duration::from_millis(10)).await;
-    }
-    SCAN_STATE.store(STATE_IDLE, Ordering::Release);
-    // SAFETY: sequenced by atomic flag; only one reader.
-    #[allow(static_mut_refs)]
-    unsafe {
-        core::ptr::read(&SCAN_RESULT as *const ScanResult)
+/// Grab a copy of the latest scan result (if the driver published one).
+fn read_scan_cache() -> Option<ScanResult> {
+    if SCAN_READY.load(Ordering::Acquire) == 1 {
+        #[allow(static_mut_refs)]
+        unsafe {
+            Some(core::ptr::read(&SCAN_CACHE as *const ScanResult))
+        }
+    } else {
+        None
     }
 }
 
-/// Serve the Wi-Fi list HTML page.
-async fn serve_wifi_list(socket: &mut TcpSocket<'_>, scan: &ScanResult) {
+// ---------------------------------------------------------------------------
+// /scan JSON rendering — the browser's fetch() parses this to fill the list.
+// ---------------------------------------------------------------------------
+
+async fn serve_scan_json(socket: &mut TcpSocket<'_>, scan: &Option<ScanResult>) {
     use embedded_io_async::Write;
 
-    let _ = socket.write_all(PAGE_HEAD.as_bytes()).await;
-
-    if scan.is_empty() {
-        let _ = socket
-            .write_all(
-                "<div class=\"em\">Không tìm thấy mạng nào.<br>\
-                 <a href=\"/\" style=\"color:#6aa9ff\">Quét lại</a></div>"
-                    .as_bytes(),
-            )
-            .await;
-    } else {
-        for ap in scan.iter() {
-            let name = escape_html(ap.ssid.as_str().as_bytes());
-            let bars = signal_bars(ap.signal_strength);
-            let locked = ap.auth_method != Some(AuthenticationMethod::None);
-
-            let _ = socket
-                .write_all(b"<label class=\"n\"><input type=\"radio\" name=\"ssid\" value=\"")
-                .await;
-            let _ = socket.write_all(&name).await;
-            let _ = socket.write_all(b"\">").await;
-            let _ = socket.write_all(bars).await;
-            let _ = socket.write_all(b"<span class=\"nm\">").await;
-            let _ = socket.write_all(&name).await;
-            let _ = socket.write_all(b"</span>").await;
-            if locked {
-                // Lock icon (Unicode 🔒 rendered as HTML entity).
-                let _ = socket.write_all(b"<span class=\"lk\">&#128274;</span>").await;
+    let _ = socket.write_all(b"[ ").await;
+    if let Some(list) = scan {
+        for (i, ap) in list.iter().enumerate() {
+            if i > 0 {
+                let _ = socket.write_all(b",").await;
             }
-            let _ = socket.write_all(b"</label>\n").await;
+            let locked = ap.auth_method != Some(AuthenticationMethod::None);
+            let _ = socket.write_all(b"{\"s\":\"").await;
+            let _ = socket.write_all(&escape_json(ap.ssid.as_str().as_bytes())).await;
+            let _ = socket.write_all(b"\",\"r\":").await;
+            let _ = socket.write_all(&write_i8(ap.signal_strength)).await;
+            let _ = socket.write_all(b",\"l\":").await;
+            let _ = socket.write_all(&write_u8(locked as u8)).await;
+            let _ = socket.write_all(b"}").await;
         }
     }
+    let _ = socket.write_all(b" ]").await;
+    let _ = socket.flush().await;
+}
 
-    let _ = socket.write_all(PAGE_TAIL.as_bytes()).await;
+/// Stream the list of saved networks as a JSON array of `{s:"ssid"}` objects.
+/// The page's JS renders this into the "Saved networks" section.
+async fn serve_saved_json(socket: &mut TcpSocket<'_>) {
+    use embedded_io_async::Write;
+
+    let saved = storage::load_all_wifi_creds();
+    let _ = socket.write_all(b"[ ").await;
+    for (i, creds) in saved.iter().enumerate() {
+        if i > 0 {
+            let _ = socket.write_all(b",").await;
+        }
+        let _ = socket.write_all(b"{\"s\":\"").await;
+        let _ = socket
+            .write_all(&escape_json(creds.ssid.as_str().as_bytes()))
+            .await;
+        let _ = socket.write_all(b"\"}").await;
+    }
+    let _ = socket.write_all(b" ]").await;
+    let _ = socket.flush().await;
+}
+
+/// Stream `{ok: true|false}` as JSON for the `/remove` endpoint.
+async fn serve_remove_json(socket: &mut TcpSocket<'_>, removed: bool) {
+    use embedded_io_async::Write;
+
+    let _ = socket.write_all(b"{\"ok\":").await;
+    let _ = socket.write_all(if removed { b"true" } else { b"false" }).await;
+    let _ = socket.write_all(b"}").await;
+    let _ = socket.flush().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +661,9 @@ async fn serve_wifi_list(socket: &mut TcpSocket<'_>, scan: &ScanResult) {
 const HTTP_200: &[u8] =
     b"HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n";
 
+const HTTP_JSON: &[u8] = b"HTTP/1.0 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\
+    Cache-Control: no-store\r\nConnection: close\r\n\r\n";
+
 const REDIRECT: &[u8] = b"HTTP/1.0 302 Found\r\n\
     Location: http://192.168.4.1/\r\n\
     Content-Length: 0\r\n\
@@ -467,20 +672,21 @@ const REDIRECT: &[u8] = b"HTTP/1.0 302 Found\r\n\
 
 const RESP_SAVED: &str = "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n\
     <!DOCTYPE html><html><body style='font-family:sans-serif;text-align:center;margin-top:20vh'>\
-    <h2>Đã lưu! Đang khởi động lại...</h2></body></html>";
+    <h2>Saved! Connecting...</h2>\
+    <p>The device is connecting to Wi-Fi. You can leave this setup network.</p>\
+    </body></html>";
 
 const RESP_BAD: &str = "HTTP/1.0 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n\
     <!DOCTYPE html><html><body style='font-family:sans-serif'>\
-    <h2>Dữ liệu không hợp lệ</h2><p>Cần chọn mạng và nhập mật khẩu (>= 8 ký tự cho WPA2).</p>\
-    <a href='/'>Quay lại</a></body></html>";
+    <h2>Invalid input</h2><p>Select a network and enter a password (8+ characters for WPA2).</p>\
+    <a href='/'>Go back</a></body></html>";
 
-// ---------------------------------------------------------------------------
-// Wi-Fi list page (HTML split to avoid giant const)
-// ---------------------------------------------------------------------------
-
-const PAGE_HEAD: &str = "\
+// The setup page.  It never blocks on a scan: a small script calls
+// fetch("/scan") (async) and renders the network list into #list, so the
+// page paints instantly and updates in place — no reload.
+const PAGE_HTML: &str = "\
 <!DOCTYPE html>
-<html lang=\"vi\">
+<html lang=\"en\">
 <head>
 <meta charset=\"utf-8\">
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
@@ -490,32 +696,99 @@ const PAGE_HEAD: &str = "\
 body{margin:0;background:#0f0f13;color:#eee;min-height:100vh}
 .h{padding:18px 16px;border-bottom:1px solid #26262e}
 .h h1{font-size:17px;margin:0;font-weight:600;display:inline-block}
-.rf{float:right;color:#6aa9ff;font-size:12px;text-decoration:none;line-height:22px}
+.rf{float:right;color:#6aa9ff;font-size:12px;text-decoration:none;line-height:22px;border:0;background:none;cursor:pointer}
 .ht{padding:12px 16px 4px;font-size:13px;color:#9a9aa5}
 .n{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid #1c1c22;cursor:pointer}
-.n input{display:none}
-.n:has(input:checked){background:#17251d}
+.n.sel{background:#17251d}
 .g{height:7px;border-radius:1px;background:#8fd19e;display:inline-block;margin-right:1px}
 .nm{flex:1;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lk{color:#b3b3bd;font-size:13px}
+.saved{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid #1c1c22}
+.saved .nm{font-size:14px}
+.del{margin-left:auto;background:none;border:1px solid #3a2430;color:#e77;border-radius:8px;padding:6px 11px;font-size:12px;cursor:pointer}
+.badge{font-size:11px;color:#6aa9ff;border:1px solid #2c3d57;border-radius:6px;padding:2px 6px}
 .pw{padding:16px}
-.pw input{width:100%;padding:13px;border-radius:10px;border:1px solid #2c2c36;background:#17171d;color:#eee;font-size:15px}
+input[type=text],input[type=password]{display:block;width:100%;padding:13px;margin-bottom:10px;border-radius:10px;\
+border:1px solid #2c2c36;background:#17171d;color:#eee;font-size:15px}
 .bt{margin:0 16px;width:calc(100% - 32px);padding:14px;border:0;border-radius:12px;background:#2ea36b;color:#fff;font-size:16px;font-weight:600}
 .em{padding:26px 16px;text-align:center;color:#777;font-size:14px}
+#list{padding-top:4px}
 </style>
 </head>
 <body>
-<div class=\"h\"><h1>Wi-Fi</h1><a class=\"rf\" href=\"/\">Quét lại</a></div>
+<div class=\"h\"><h1>Wi-Fi</h1><button class=\"rf\" id=\"scanbtn\">Rescan</button></div>
 <form method=\"POST\" action=\"/\">
-<p class=\"ht\">Chọn mạng Wi-Fi rồi nhập mật khẩu</p>
-";
-
-const PAGE_TAIL: &str = "
+<p class=\"ht\" id=\"status\">Scanning networks...</p>
+<div id=\"list\"><div class=\"em\">Scanning...</div></div>
 <div class=\"pw\">
-<input type=\"password\" name=\"password\" placeholder=\"Nhập mật khẩu Wi-Fi\" autocomplete=\"off\">
+<input type=\"text\" name=\"ssid\" id=\"manual\" placeholder=\"Wi-Fi name (SSID)\" autocomplete=\"off\">
+<input type=\"password\" name=\"password\" placeholder=\"Wi-Fi password\" autocomplete=\"off\">
 </div>
-<button type=\"submit\" class=\"bt\">Kết nối</button>
+<button type=\"submit\" class=\"bt\">Connect</button>
 </form>
+<p class=\"ht\">Saved networks (tap X to remove)</p>
+<div id=\"savedlist\"><div class=\"em\">Loading...</div></div>
+<script>
+function bars(r){var s='',n=4;
+ if(r>=-50)n=4;else if(r>=-65)n=3;else if(r>=-75)n=2;else if(r>=-85)n=1;else n=0;
+ for(var i=0;i<4;i++){s+='<span class=\"g\"'+(i<n?'':' style=\"opacity:.3\"')+'></span>';}return s;}
+function pick(el){
+ var man=document.getElementById('manual');man.value=el.dataset.s;
+ var rows=document.getElementsByClassName('n');
+ for(var i=0;i<rows.length;i++){rows[i].classList.remove('sel');}
+ el.classList.add('sel');
+}
+function load(){
+ var st=document.getElementById('status');st.textContent='Scanning networks...';
+ document.getElementById('list').innerHTML='<div class=\"em\">Scanning...</div>';
+ fetch('/scan',{cache:'no-store'}).then(function(r){return r.json()}).then(function(aps){
+  var list=document.getElementById('list');list.innerHTML='';
+  if(!aps.length){st.textContent='No networks found — type the SSID manually';
+   list.innerHTML='<div class=\"em\">No networks found. Enter the SSID and password below.</div>';
+   return;}
+  st.textContent='Tap a network, then enter the password and Connect';
+  aps.forEach(function(ap){
+   var l=document.createElement('div');l.className='n';
+   l.setAttribute('onclick','pick(this)');
+   l.dataset.s=ap.s;
+   var sp=document.createElement('span');sp.innerHTML=bars(ap.r);
+   var nm=document.createElement('span');nm.className='nm';nm.textContent=ap.s;
+   l.appendChild(sp);l.appendChild(nm);
+   if(ap.l){var lk=document.createElement('span');lk.className='lk';lk.textContent='🔒';l.appendChild(lk);}
+   list.appendChild(l);
+  });
+ }).catch(function(){st.textContent='Scan failed. Enter the SSID manually.';
+  document.getElementById('list').innerHTML='<div class=\"em\">Scan failed, enter the SSID and password below.</div>';});
+}
+function loadSaved(){
+ var el=document.getElementById('savedlist');
+ fetch('/saved',{cache:'no-store'}).then(function(r){return r.json()}).then(function(nets){
+  el.innerHTML='';
+  if(!nets.length){el.innerHTML='<div class=\"em\">No saved networks yet.</div>';return;}
+  var title='Saved networks (tap X to remove)';
+  nets.forEach(function(n){
+   var d=document.createElement('div');d.className='saved';
+   var nm=document.createElement('span');nm.className='nm';nm.textContent=n.s;
+   var bd=document.createElement('span');bd.className='badge';bd.textContent='saved';
+   var x=document.createElement('button');x.className='del';x.textContent='✕';
+   x.onclick=function(e){e.stopPropagation();removeSaved(n.s);};
+   d.appendChild(nm);d.appendChild(bd);d.appendChild(x);el.appendChild(d);
+  });
+ }).catch(function(){el.innerHTML='<div class=\"em\">Could not load saved networks.</div>';});
+}
+function removeSaved(ssid){
+ if(!confirm('Remove saved network \"'+ssid+'\"?')){return;}
+ var body='ssid='+encodeURIComponent(ssid);
+ fetch('/remove',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+  .then(function(r){return r.json()}).then(function(res){
+   document.getElementById('manual').value='';
+   loadSaved();
+  }).catch(function(){});
+}
+document.getElementById('scanbtn').onclick=function(e){e.preventDefault();load();};
+load();
+loadSaved();
+</script>
 </body>
 </html>
 ";
@@ -524,33 +797,85 @@ const PAGE_TAIL: &str = "
 // HTML / HTTP helpers
 // ---------------------------------------------------------------------------
 
-fn signal_bars(signal: i8) -> &'static [u8] {
-    match signal {
-        s if s >= -50 => b"<span class=\"g\"></span><span class=\"g\"></span><span class=\"g\"></span><span class=\"g\"></span>",
-        s if s >= -65 => b"<span class=\"g\"></span><span class=\"g\"></span><span class=\"g\"></span>",
-        s if s >= -75 => b"<span class=\"g\"></span><span class=\"g\"></span>",
-        s if s >= -85 => b"<span class=\"g\"></span>",
-        _ => b"<span class=\"g\" style=\"opacity:.3\"></span>",
+fn escape_json(s: &[u8]) -> heapless::Vec<u8, 224> {
+    let mut out = heapless::Vec::<u8, 224>::new();
+    for &b in s {
+        match b {
+            b'\\' => {
+                let _ = out.push(b'\\');
+                let _ = out.push(b'\\');
+            }
+            b'"' => {
+                let _ = out.push(b'\\');
+                let _ = out.push(b'"');
+            }
+            b'\n' => {
+                let _ = out.push(b'\\');
+                let _ = out.push(b'n');
+            }
+            b'\r' => {
+                let _ = out.push(b'\\');
+                let _ = out.push(b'r');
+            }
+            b'\t' => {
+                let _ = out.push(b'\\');
+                let _ = out.push(b't');
+            }
+            b if b < 0x20 => {
+                let _ = out.push(b'\\');
+                let _ = out.push(b'u');
+                let _ = out.push(b'0');
+                let _ = out.push(b'0');
+                let _ = out.push(hex_char((b >> 4) & 0xF));
+                let _ = out.push(hex_char(b & 0xF));
+            }
+            _ => {
+                let _ = out.push(b);
+            }
+        }
+    }
+    out
+}
+
+fn hex_char(v: u8) -> u8 {
+    match v {
+        0..=9 => b'0' + v,
+        _ => b'a' + (v - 10),
     }
 }
 
-fn escape_html(s: &[u8]) -> heapless::Vec<u8, 224> {
-    let mut out = heapless::Vec::<u8, 224>::new();
-    for &b in s {
-        let rep: &[u8] = match b {
-            b'&' => b"&amp;",
-            b'<' => b"&lt;",
-            b'>' => b"&gt;",
-            b'"' => b"&quot;",
-            b'\'' => b"&#39;",
-            _ => {
-                let _ = out.push(b);
-                continue;
-            }
-        };
-        for &c in rep {
-            let _ = out.push(c);
+/// Serialize an `i8` as a decimal string (e.g. -60 → `-60`).
+fn write_i8(v: i8) -> heapless::Vec<u8, 4> {
+    let mut out = heapless::Vec::<u8, 4>::new();
+    if v < 0 {
+        let _ = out.push(b'-');
+        for b in write_u8(v.unsigned_abs()) {
+            let _ = out.push(b);
         }
+    } else {
+        for b in write_u8(v as u8) {
+            let _ = out.push(b);
+        }
+    }
+    out
+}
+
+/// Serialize a `u8` as a decimal string.
+fn write_u8(v: u8) -> heapless::Vec<u8, 3> {
+    let mut out = heapless::Vec::<u8, 3>::new();
+    let mut digs = [0u8; 3];
+    let mut len = 0;
+    let mut m = v;
+    loop {
+        digs[len] = b'0' + (m % 10);
+        len += 1;
+        m /= 10;
+        if m == 0 {
+            break;
+        }
+    }
+    for i in (0..len).rev() {
+        let _ = out.push(digs[i]);
     }
     out
 }
@@ -569,6 +894,22 @@ fn is_local_host(req: &[u8]) -> bool {
         }
     }
     true // no Host header → treat as local
+}
+
+/// Check whether this is a `GET <path> ...` request.
+fn is_path(req: &[u8], path: &[u8]) -> bool {
+    req.starts_with(b"GET ") && {
+        let rest = &req[4..];
+        rest.starts_with(path) && rest.get(path.len()) == Some(&b' ')
+    }
+}
+
+/// Check whether this is a `POST <path> ...` request.
+fn is_post_path(req: &[u8], path: &[u8]) -> bool {
+    req.starts_with(b"POST ") && {
+        let rest = &req[5..];
+        rest.starts_with(path) && rest.get(path.len()) == Some(&b' ')
+    }
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
