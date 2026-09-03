@@ -6,7 +6,8 @@
 //! [`ClockStyle`] setting (Settings → "Clock Face"):
 //! - **Analog**: hands + ticks + hub, animating once a second (showcases the
 //!   `oled-i2c` shape API).
-//! - **Digital**: large `HH:MM` digits with a seconds readout below.
+//! - **Digital**: large `HH:MM` digits with the calendar date and a seconds
+//!   readout below.
 //!
 //! The style is a runtime value the settings screen can change; it persists to
 //! flash via [`crate::storage`] and is restored at boot ([`init_clock_style`]).
@@ -189,17 +190,22 @@ fn fmt_hm(h: u32, m: u32) -> heapless::String<5> {
 /// Show the digital clock for `ms` milliseconds, checking the gesture channel
 /// so a triple-tap can jump to settings early. Returns the next screen.
 async fn show_digital(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
-    let mut last_drawn: Option<(u32, u32, u32)> = None;
+    let mut last_drawn: Option<(u32, u32, u32, bool)> = None;
     let mut remaining = ms as i64;
 
     while remaining > 0 {
         let (h, m, s) = now_hm();
+        let date = time::wall_date();
+        // `has_date` flags whether the date line is populated (`false` when the
+        // board hasn't synced yet — show a placeholder until NTP lands).
+        let has_date = date.is_some();
 
-        // Redraw only when the displayed second actually changes — the display
-        // is static and cheap otherwise, and this avoids a busy redraw loop.
-        if last_drawn != Some((h, m, s)) {
-            draw_digital(display, h, m, s);
-            last_drawn = Some((h, m, s));
+        // Redraw only when the displayed second (or the date availability)
+        // changes — the display is static and cheap otherwise, and this avoids
+        // a busy redraw loop.
+        if last_drawn != Some((h, m, s, has_date)) {
+            draw_digital(display, h, m, s, date);
+            last_drawn = Some((h, m, s, has_date));
         }
 
         let step = 200u32.min(remaining as u32);
@@ -215,8 +221,16 @@ async fn show_digital(display: &mut Display, ms: u32, tap: &'static TapChannel) 
     Screen::FacePlayer
 }
 
-/// Render the digital clock face into the buffer and flush it.
-fn draw_digital(display: &mut Display, h: u32, m: u32, s: u32) {
+/// Format a calendar date as `DD/MM/YYYY`.
+fn fmt_date(y: i32, mo: u32, d: u32) -> heapless::String<10> {
+    let mut s = heapless::String::<10>::new();
+    let _ = write!(&mut s, "{d:02}/{mo:02}/{y:04}");
+    s
+}
+
+/// Render the digital clock face into the buffer and flush it. `date` is the
+/// (year, month, day) to show, or `None` to show a placeholder until synced.
+fn draw_digital(display: &mut Display, h: u32, m: u32, s: u32, date: Option<(i32, u32, u32)>) {
     display.clear_buffer();
     display.set_font(&FONT_5X7);
     display.set_text_color(true);
@@ -225,14 +239,23 @@ fn draw_digital(display: &mut Display, h: u32, m: u32, s: u32) {
     let hm = fmt_hm(h, m);
     let hm_w = hm.len() as i16 * 18;
     display.set_text_size(3);
-    display.draw_str_with((config::SCREEN_WIDTH as i16 - hm_w) / 2, 6, &hm, &FONT_5X7);
+    display.draw_str_with((config::SCREEN_WIDTH as i16 - hm_w) / 2, 2, &hm, &FONT_5X7);
 
-    // Seconds readout below, at 2x scale, centred under the time.
+    // Date line at 1x scale, centred under the time (e.g. "03/09/2026").
+    let date_str: heapless::String<10> = match date {
+        Some((y, mo, d)) => fmt_date(y, mo, d),
+        None => "--/--/----".try_into().unwrap(),
+    };
+    let date_w = date_str.len() as i16 * 6;
+    display.set_text_size(1);
+    display.draw_str_with((config::SCREEN_WIDTH as i16 - date_w) / 2, 30, &date_str, &FONT_5X7);
+
+    // Seconds readout below the date, at 2x scale, centred.
     display.set_text_size(2);
     let mut secs = heapless::String::<2>::new();
     let _ = write!(&mut secs, "{s:02}");
     let secs_w = secs.len() as i16 * 12;
-    display.draw_str_with((config::SCREEN_WIDTH as i16 - secs_w) / 2, 38, &secs, &FONT_5X7);
+    display.draw_str_with((config::SCREEN_WIDTH as i16 - secs_w) / 2, 44, &secs, &FONT_5X7);
 
     let _ = display.flush();
 }

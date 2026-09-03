@@ -93,3 +93,38 @@ pub fn wall_clock() -> Option<(u32, u32, u32)> {
         (base as i64 + elapsed as i64 + offset_secs).rem_euclid(86_400) as u64;
     Some(((total / 3600) as u32, ((total % 3600) / 60) as u32, (total % 60) as u32))
 }
+
+/// Returns the current local calendar date as `(year, month, day)` (year
+/// signed, month 1..=12, day 1..=31), computed from the last NTP sync plus
+/// elapsed uptime and the configured UTC offset.
+///
+/// Returns `None` when the time has never been synced (the board has no RTC,
+/// so a date cannot be derived from raw uptime alone).
+pub fn wall_date() -> Option<(i32, u32, u32)> {
+    let base = NTP_UNIX_SECS.load(Ordering::Acquire);
+    let snap = NTP_SNAP_SECS.load(Ordering::Acquire);
+    if base == 0 {
+        return None;
+    }
+    let elapsed = boot_secs().wrapping_sub(snap);
+    let offset_secs = gmt_offset() as i64 * 3600;
+    let unix = base as i64 + elapsed as i64 + offset_secs;
+    Some(civil_from_days(unix.div_euclid(86_400)))
+}
+
+/// Convert days since the Unix epoch to a calendar date `(year, month, day)`
+/// using Howard Hinnant's `civil_from_days` algorithm (no floating point, no
+/// tables, valid for any reasonable range of dates).
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y }; // year
+    (y as i32, m, d)
+}
