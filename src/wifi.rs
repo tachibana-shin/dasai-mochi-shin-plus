@@ -53,12 +53,21 @@ const MAX_APS: usize = 40;
 /// Hostname resolved (via the STA's DHCP-provided DNS) to get the time from
 /// Google's public NTP anycast pool.
 const NTP_HOST: &str = "time.google.com";
-/// NTP service port.
+/// Service port (NTP).
 const NTP_PORT: u16 = 123;
 /// Seconds between 1900-01-01 (NTP epoch) and 1970-01-01 (Unix epoch).
 const NTP_UNIX_OFFSET: u64 = 2_208_988_800;
-/// How often we re-sync the clock while connected.
-const NTP_REFRESH: Duration = Duration::from_secs(3600);
+/// How often we (re)sync the clock while connected. Kept short (1 min) so a
+/// failed sync — e.g. the first attempt racing DHCP, or a network that briefly
+/// drops NTP packets — is retried promptly rather than after an hour.
+const NTP_REFRESH: Duration = Duration::from_secs(60);
+/// If the primary hostname can't be reached, fall back to these fixed public
+/// NTP servers (pool.ntp.org is aggressive about blocking port 123 abuse, so
+/// only used as a last resort).
+const NTP_FALLBACKS: &[Ipv4Addr] = &[
+    Ipv4Addr::new(129, 6, 15, 28),  // time-a-g.nist.gov
+    Ipv4Addr::new(162, 159, 200, 123), // time.cloudflare.com
+];
 
 /// Hard cap on how long a scan may take before we give up (avoids hanging the
 /// driver when the radio is busy serving the SoftAP).
@@ -159,7 +168,7 @@ pub fn spawn(spawner: Spawner, wi_fi: esp_hal::peripherals::WIFI<'static>) {
     //   continuously, which cuts idle current noticeably.
     // - Lower max TX power: the board is close to the router and doesn't need
     //   full 20 dBm; 9 dBm (36 * 0.25 dBm) still reaches it while emitting far
-    //   less heat. These are also applied after every connect in the driver.
+    //   less heat.
     let _ = controller.set_power_saving(PowerSaveMode::Minimum);
     let _ = controller.set_max_tx_power(36);
 
@@ -509,16 +518,30 @@ async fn ntp_task(stack: Stack<'static>) -> ! {
     let mut resp = [0u8; 48];
 
     loop {
-        // Wait for the STA to actually be connected and have an IP.
-        if !stack.is_config_up() {
-            stack.wait_config_up().await;
+        // Wait for the STA to actually be connected and have an IP (DHCP).
+        // Block silently, but log once if we're stuck waiting a long time so a
+        // network that never hands out an IP (or a broken DHCP) is visible.
+        while !stack.is_config_up() {
+            Timer::after(Duration::from_secs(10)).await;
+            if !stack.is_config_up() {
+                println!(
+                    "[ntp] still waiting for STA IP (link_up={}, config_up={})",
+                    stack.is_link_up(),
+                    stack.is_config_up()
+                );
+            }
         }
+        println!("[ntp] STA config up (link={})", stack.is_link_up());
 
         // Resolve the NTP host (fresh each round so DNS failures don't stick).
         // `DnsSocket::query()` blocks for as long as it takes with no built-in
         // timeout, so we race it against a timer to avoid wedging the task (and
         // silently never synchronising the clock).
-        let mut server = Ipv4Addr::new(216, 239, 35, 0); // Google NTP anycast fallback
+        let mut servers: [Ipv4Addr; 3] = [
+            Ipv4Addr::new(216, 239, 35, 0), // Google NTP anycast (pre-resolved fallback)
+            NTP_FALLBACKS[0],
+            NTP_FALLBACKS[1],
+        ];
         let query = dns.query(NTP_HOST, embassy_net::dns::DnsQueryType::A);
         let resolved = embassy_futures::select::select(
             query,
@@ -528,50 +551,60 @@ async fn ntp_task(stack: Stack<'static>) -> ! {
         if let embassy_futures::select::Either::First(Ok(mut addrs)) = resolved {
             while let Some(a) = addrs.pop() {
                 if let embassy_net::IpAddress::Ipv4(v4) = a {
-                    server = Ipv4Addr::from(v4);
+                    servers[0] = Ipv4Addr::from(v4);
                     break;
                 }
             }
-            println!("[ntp] resolved {} -> {}", NTP_HOST, server);
+            println!(
+                "[ntp] trying {} and {} fallbacks",
+                NTP_HOST,
+                NTP_FALLBACKS.len()
+            );
         } else {
-            println!("[ntp] DNS for {NTP_HOST} timed out; falling back to {}", server);
+            println!("[ntp] DNS for {NTP_HOST} timed out; using fallbacks");
         }
 
-        let ntp_peer = SocketAddr::V4(SocketAddrV4::new(server, NTP_PORT));
-
-        // Build a simple SNTP client request (mode 3 = client).
+        // Build a simple SNTP client request (mode 3 = client) once.
         pkt.fill(0);
         pkt[0] = 0x1B; // LI=0, VN=3, mode=3
 
-        let _ = bound.send(ntp_peer, &pkt).await;
-
-        // Wait (bounded) for a valid 48-byte NTP response.
+        // Try each server until one answers with a valid 48-byte response.
         let mut unix: Option<i64> = None;
-        let deadline = embassy_time::Instant::now() + Duration::from_secs(5);
-        while embassy_time::Instant::now() < deadline {
-            match bound.receive(&mut resp).await {
-                Ok((len, _peer)) => {
-                    if len >= 48 {
-                        // Transmit timestamp is bytes 40..48 (seconds since 1900).
-                        let secs = u32::from_be_bytes([
-                            resp[40], resp[41], resp[42], resp[43],
-                        ]);
-                        unix = Some((secs as u64 - NTP_UNIX_OFFSET) as i64);
+        for server in servers {
+            let ntp_peer = SocketAddr::V4(SocketAddrV4::new(server, NTP_PORT));
+            if bound.send(ntp_peer, &pkt).await.is_err() {
+                continue; // couldn't send — move on to the next server
+            }
+            // Wait (bounded, per server) for a valid NTP response.
+            let deadline = embassy_time::Instant::now() + Duration::from_secs(3);
+            while embassy_time::Instant::now() < deadline {
+                match bound.receive(&mut resp).await {
+                    Ok((len, _peer)) => {
+                        if len >= 48 {
+                            // Transmit timestamp is bytes 40..48 (secs since 1900).
+                            let secs = u32::from_be_bytes([
+                                resp[40], resp[41], resp[42], resp[43],
+                            ]);
+                            unix = Some((secs as u64 - NTP_UNIX_OFFSET) as i64);
+                        }
+                        break;
                     }
-                    break;
+                    Err(_) => {
+                        Timer::after(Duration::from_millis(50)).await;
+                    }
                 }
-                Err(_) => {
-                    Timer::after(Duration::from_millis(50)).await;
-                }
+            }
+            if unix.is_some() {
+                println!("[ntp] synced from {} -> unix {}", server, unix.unwrap());
+                break;
             }
         }
 
         match unix {
             Some(u) => {
                 crate::time::set_ntp_time(u);
-                println!("[ntp] synced time.google.com -> unix {u}");
             }
-            None => println!("[ntp] sync failed (no response)"),
+            None => println!("[ntp] sync failed (no NTP response)"),
         }
 
         Timer::after(NTP_REFRESH).await;
