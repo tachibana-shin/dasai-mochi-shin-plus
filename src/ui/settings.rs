@@ -9,8 +9,8 @@
 //! - **triple-tap** – back out to the face player.
 //! - **press** – reserved.
 //!
-//! Edit mode is tile-specific. The value tiles (brightness, timezone, Wi-Fi)
-//! all follow the same pattern:
+//! Edit mode is tile-specific. The value tiles (brightness, timezone, Wi-Fi,
+//! clock face) all follow the same pattern:
 //! - **tap** – step the value up (wrapping at the top back to the bottom).
 //! - **hold** – auto-repeat (the sensor task publishes repeated `Press` events
 //!   while the touch is held past the press threshold).
@@ -30,6 +30,7 @@ use crate::drivers::screen;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::Screen;
 use crate::time;
+use crate::ui::clock::{self, ClockStyle};
 
 /// The kinds of settings tiles. Each maps to a distinct edit/action handler.
 #[derive(Clone, Copy, PartialEq)]
@@ -40,6 +41,8 @@ enum TileKind {
     Timezone,
     /// User Wi-Fi on/off switch, applied live.
     WifiToggle,
+    /// Clock-face style (analog vs digital), stored in flash.
+    ClockFace,
     /// Action: force the SoftAP provisioning mode back up.
     ForceAp,
 }
@@ -57,8 +60,13 @@ const TILES: &[Tile] = &[
     Tile { title: "Brightness", kind: TileKind::Brightness },
     Tile { title: "GMT Offset", kind: TileKind::Timezone },
     Tile { title: "Wi-Fi", kind: TileKind::WifiToggle },
+    Tile { title: "Clock Face", kind: TileKind::ClockFace },
     Tile { title: "AP Setup", kind: TileKind::ForceAp },
 ];
+
+/// How many tile rows fit on screen at once. With 13px rows the 128x64 panel
+/// shows 4; the list scrolls as the selection moves past the window.
+const VISIBLE_ROWS: usize = 4;
 
 /// Show the settings listview until the user exits back to the face player.
 ///
@@ -69,7 +77,12 @@ pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brigh
     let mut sel = 0usize;
 
     loop {
-        draw_list(display, *brightness, sel);
+        // Keep the selected row visible, scrolling the list vertically as the
+        // selection moves past the on-screen window.
+        let top = sel
+            .saturating_sub(VISIBLE_ROWS - 1)
+            .min(TILES.len().saturating_sub(VISIBLE_ROWS));
+        draw_list(display, *brightness, sel, top);
         match tap::wait_tap(tap).await {
             Gesture::Tap => {
                 sel = (sel + 1) % TILES.len();
@@ -78,6 +91,7 @@ pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brigh
                 TileKind::Brightness => edit_brightness(display, tap, brightness).await,
                 TileKind::Timezone => edit_timezone(display, tap).await,
                 TileKind::WifiToggle => edit_wifi(display, tap).await,
+                TileKind::ClockFace => edit_clock_face(display, tap).await,
                 TileKind::ForceAp => trigger_force_ap(display).await,
             },
             Gesture::TripleTap => return Screen::FacePlayer,
@@ -87,12 +101,15 @@ pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brigh
     }
 }
 
-/// Render the settings listview: one row per tile plus a bottom hint bar.
+/// Render the settings listview: up to [`VISIBLE_ROWS`] tile rows plus a bottom
+/// hint bar. `top` is the index of the first visible tile (0-based), so the
+/// list scrolls as the selection moves.
 ///
 /// Each row shows the tile's label on the left and a value indicator on the
-/// right: a progress bar for brightness, "UTC±N" for the timezone, "ON"/"OFF"
-/// for Wi-Fi, and an "open" glyph for the AP action.
-fn draw_list(display: &mut screen::Display, brightness: u8, sel: usize) {
+/// right: a progress bar for brightness, "UTC±N" for the timezone, the network
+/// name for Wi-Fi, "Analog"/"Digital" for the clock face, and an "open" glyph
+/// for the AP action.
+fn draw_list(display: &mut screen::Display, brightness: u8, sel: usize, top: usize) {
     display.clear_buffer();
 
     // Force native 1x scale + the 5x7 font so rows stay compact and labels can
@@ -105,8 +122,9 @@ fn draw_list(display: &mut screen::Display, brightness: u8, sel: usize) {
     let pad_x = 3i16;
     let glyph_h = 8i16; // FONT_5X7 glyph cell height
 
-    for (i, tile) in TILES.iter().enumerate() {
-        let y = 1 + i as i16 * row_h;
+    for (i, tile) in TILES.iter().enumerate().skip(top).take(VISIBLE_ROWS) {
+        let vis = i - top;
+        let y = 1 + vis as i16 * row_h;
         let selected = i == sel;
 
         // Highlight bar behind the selected row; unselected rows are plain.
@@ -177,6 +195,15 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
             let shown = &text[..text.len().min(max_chars as usize)];
             let w = shown.len() as i16 * glyph_w;
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, shown, &FONT_5X7);
+        }
+        TileKind::ClockFace => {
+            // "Analog" / "Digital" on the right.
+            let s = match clock::clock_style() {
+                ClockStyle::Analog => "Analog",
+                ClockStyle::Digital => "Digital",
+            };
+            let w = s.len() as i16 * glyph_w;
+            display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
         }
         TileKind::ForceAp => {
             // No value; just a hint that it's a one-shot action.
@@ -409,6 +436,53 @@ fn render_wifi_marquee(
 
     draw_edit_hint(display);
     let _ = display.flush();
+}
+
+/// Clock-face style tile edit mode. `tap`/`press` toggles between Analog and
+/// Digital (applied live); `double` persists the choice, `triple` cancels.
+async fn edit_clock_face(display: &mut screen::Display, tap: &'static TapChannel) {
+    loop {
+        draw_clock_face_edit(display);
+        match tap::wait_tap(tap).await {
+            Gesture::Tap | Gesture::Press => {
+                let next = match clock::clock_style() {
+                    ClockStyle::Analog => ClockStyle::Digital,
+                    ClockStyle::Digital => ClockStyle::Analog,
+                };
+                clock::set_clock_style(next); // live preview, not yet persisted
+            }
+            Gesture::DoubleTap => {
+                clock::persist_clock_style(clock::clock_style()); // persist on save
+                return;
+            }
+            Gesture::TripleTap => {
+                // Cancel: revert to the last-persisted style.
+                clock::set_clock_style(match crate::storage::load_clock_style() {
+                    1 => ClockStyle::Digital,
+                    _ => ClockStyle::Analog,
+                });
+                return;
+            }
+        }
+    }
+}
+
+/// Render the clock-face edit screen: title plus a large current-style label.
+fn draw_clock_face_edit(display: &mut screen::Display) {
+    display.clear_buffer();
+    screen_edit_base(display, "Clock Face");
+    display.set_text_color(true);
+
+    let (label, w) = match clock::clock_style() {
+        ClockStyle::Analog => ("Analog", 6 * 12),
+        ClockStyle::Digital => ("Digital", 7 * 12),
+    };
+    let x = (config::SCREEN_WIDTH as i16 - w) / 2;
+    display.set_text_size(2);
+    display.draw_str_with(x, 24, label, &FONT_5X7);
+
+    display.set_text_size(1);
+    draw_edit_hint(display);
 }
 
 /// Force-AP action tile: bring the SoftAP back up and show a short

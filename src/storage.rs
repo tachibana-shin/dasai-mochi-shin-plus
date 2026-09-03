@@ -23,13 +23,16 @@ use crate::config;
 const STORAGE_OFFSET: u32 = 0x001F_0000;
 /// Flash sector size in bytes (ESP32-C3 NOR flash).
 const SECTOR_SIZE: u32 = 4096;
-/// Bytes we use in the sector: `[magic: 4][brightness: 1][reserved: 1][gmt_offset: i32]`.
+/// Bytes we use in the sector: `[magic: 4][brightness: 1][clock_style: 1][gmt_offset: i32]`.
 /// Brightness lives at byte 4 (unchanged from the original layout for
-/// compatibility); the UTC offset occupies bytes 6..10. Total 10, padded to a
+/// compatibility); the clock-face style previously sat in the reserved byte at
+/// index 5; the UTC offset occupies bytes 6..10. Total 10, padded to a
 /// word-aligned read length of 12.
 const STORAGE_LEN: usize = 12;
 /// Byte index of the brightness value within the sector.
 const BRIGHTNESS_BYTE: usize = 4;
+/// Byte index of the clock-face style (`0` = analog, `1` = digital).
+const CLOCK_STYLE_BYTE: usize = 5;
 /// Byte index of the UTC offset (i32, little-endian) within the sector.
 const GMT_OFFSET_BYTE: usize = 6;
 
@@ -78,14 +81,45 @@ pub fn load_brightness() -> u8 {
 }
 
 /// Persist the brightness value across reboots (erases + rewrites the sector).
-/// The UTC offset is read back first so it isn't lost when rewriting.
+/// The UTC offset and clock style are read back first so they aren't lost.
 pub fn save_brightness(value: u8) {
+    let gmt = load_raw_gmt();
+    let style = load_raw_clock_style();
+    unsafe {
+        let _ = ll::spiflash_unlock();
+        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
+    }
+    write_sector(value, gmt, style);
+}
+
+/// Load the stored clock-face style (`0` analog, `1` digital), falling back to
+/// the default if nothing valid is stored or the value is out of range.
+fn load_raw_clock_style() -> u8 {
+    let Some(bytes) = read_sector() else {
+        return config::CLOCK_DEFAULT_STYLE;
+    };
+    let v = bytes[CLOCK_STYLE_BYTE];
+    if v > 1 {
+        config::CLOCK_DEFAULT_STYLE
+    } else {
+        v
+    }
+}
+
+/// Public clock-style loader, used at boot to restore the chosen face.
+pub fn load_clock_style() -> u8 {
+    load_raw_clock_style()
+}
+
+/// Persist the clock-face style across reboots, preserving brightness + offset.
+pub fn save_clock_style(value: u8) {
+    let brightness = load_brightness();
     let gmt = load_raw_gmt();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(value, gmt);
+    write_sector(brightness, gmt, value.min(1));
 }
 
 /// Load the stored UTC offset in whole hours, falling back to the default if
@@ -115,19 +149,22 @@ pub fn load_gmt_offset() -> i32 {
 /// Persist the UTC offset across reboots, preserving the brightness value.
 pub fn save_gmt_offset(value: i32) {
     let brightness = load_brightness();
+    let style = load_raw_clock_style();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(brightness, value.clamp(crate::time::GMT_MIN, crate::time::GMT_MAX));
+    write_sector(brightness, value.clamp(crate::time::GMT_MIN, crate::time::GMT_MAX), style);
 }
 
-/// Write both brightness and UTC offset to the config sector in one erase.
-fn write_sector(brightness: u8, gmt: i32) {
+/// Write brightness, UTC offset and clock-face style to the config sector in
+/// one erase.
+fn write_sector(brightness: u8, gmt: i32, style: u8) {
     let magic = MAGIC.to_le_bytes();
     let mut bytes = [0u8; STORAGE_LEN];
     bytes[0..4].copy_from_slice(&magic);
     bytes[BRIGHTNESS_BYTE] = brightness;
+    bytes[CLOCK_STYLE_BYTE] = style;
     bytes[GMT_OFFSET_BYTE..GMT_OFFSET_BYTE + 4].copy_from_slice(&gmt.to_le_bytes());
     let mut raw = [0u32; STORAGE_LEN / 4];
     for (i, block) in bytes.chunks_exact(4).enumerate() {

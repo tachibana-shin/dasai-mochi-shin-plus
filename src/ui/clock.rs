@@ -1,19 +1,98 @@
-//! Analog clock screen, shown as an interlude between played faces.
+//! Clock screens, shown as an interlude between played faces.
 //!
-//! The board has no RTC, so the hands tick with **uptime** (`esp_hal::time::Instant`
-//! counts since boot). This showcases the `oled-i2c` shape API (`draw_circle` /
-//! `draw_line` / `fill_circle`) instead of a blank screen, animating once a
-//! second like a real clock. The router enters this screen after each face.
-//! A **single tap** sleeps the display (returns [`Screen::Off`]) and wakes back
-//! to this clock; a **triple-tap** jumps straight to settings.
+//! The board has no RTC, so the clock ticks with **uptime** (`esp_hal::time::Instant`
+//! counts since boot), shifted to real wall-clock time once NTP sync is
+//! available (see [`crate::time`]). Two faces are available, chosen by the
+//! [`ClockStyle`] setting (Settings → "Clock Face"):
+//! - **Analog**: hands + ticks + hub, animating once a second (showcases the
+//!   `oled-i2c` shape API).
+//! - **Digital**: large `HH:MM` digits with a seconds readout below.
+//!
+//! The style is a runtime value the settings screen can change; it persists to
+//! flash via [`crate::storage`] and is restored at boot ([`init_clock_style`]).
+//! A **single tap** on either face sleeps the display (returns [`Screen::Off`])
+//! and wakes back to the same face; a **triple-tap** jumps to settings.
+
+use core::fmt::Write as _;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use esp_hal::time::Instant as EspInstant;
+use oled_i2c::FONT_5X7;
 
 use crate::config;
 use crate::drivers::screen::Display;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::{Prev, Screen};
 use crate::time;
+
+/// Which clock face the router shows as its interlude.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClockStyle {
+    /// Hands + ticks + hub (the original face).
+    Analog,
+    /// Large `HH:MM` digital digits with a seconds readout.
+    Digital,
+}
+
+/// Runtime clock-face selection, backed by flash and restored at boot.
+static STYLE: AtomicU8 = AtomicU8::new(0);
+
+/// The currently selected clock face ([`ClockStyle::Analog`] by default).
+pub fn clock_style() -> ClockStyle {
+    if STYLE.load(Ordering::Acquire) == 1 {
+        ClockStyle::Digital
+    } else {
+        ClockStyle::Analog
+    }
+}
+
+/// Restore the persisted clock-face style at boot.
+pub fn init_clock_style() {
+    STYLE.store(crate::storage::load_clock_style().min(1), Ordering::Release);
+}
+
+/// Set the clock-face style in memory only (applied live during editing);
+/// call [`persist_clock_style`] to store it permanently.
+pub fn set_clock_style(style: ClockStyle) {
+    STYLE.store(match style {
+        ClockStyle::Analog => 0,
+        ClockStyle::Digital => 1,
+    }, Ordering::Release);
+}
+
+/// Persist the current clock-face style to flash.
+pub fn persist_clock_style(style: ClockStyle) {
+    set_clock_style(style);
+    crate::storage::save_clock_style(match style {
+        ClockStyle::Analog => 0,
+        ClockStyle::Digital => 1,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Shared time readout
+// ---------------------------------------------------------------------------
+
+/// Current wall-clock time as `(hours, minutes, seconds)` (0..23, 0..59, 0..59).
+/// Prefers the NTP-synced time; falls back to raw uptime when never synced
+/// (the board has no RTC).
+fn now_hm() -> (u32, u32, u32) {
+    match time::wall_clock() {
+        Some((h, m, s)) => (h, m, s),
+        None => {
+            let uptime_ms = EspInstant::now().duration_since_epoch().as_millis();
+            (
+                ((uptime_ms / 3_600_000) % 12) as u32,
+                ((uptime_ms / 60_000) % 60) as u32,
+                ((uptime_ms / 1000) % 60) as u32,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Analog face
+// ---------------------------------------------------------------------------
 
 /// Approximate `sin(deg)` as a fixed-point integer scaled by 1024, using the
 /// Bhaskara I rational approximation (error < 0.003 — irrelevant on a 1bpp
@@ -66,25 +145,13 @@ fn draw_clock_face(display: &mut Display) {
     }
 }
 
-/// Show an analog clock for `ms` milliseconds, checking the gesture channel so
+/// Show the analog clock for `ms` milliseconds, checking the gesture channel so
 /// a triple-tap can jump to settings early. Returns the next screen.
-pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
+async fn show_analog(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
     display.clear_buffer();
     let mut remaining = ms as i64;
     while remaining > 0 {
-        // Prefer the NTP-synced wall-clock time; fall back to raw uptime when
-        // we've never synced (the board has no RTC).
-        let (hours, mins, secs) = match time::wall_clock() {
-            Some((h, m, s)) => (h, m, s),
-            None => {
-                let uptime_ms = EspInstant::now().duration_since_epoch().as_millis();
-                (
-                    ((uptime_ms / 3_600_000) % 12) as u32,
-                    ((uptime_ms / 60_000) % 60) as u32,
-                    ((uptime_ms / 1000) % 60) as u32,
-                )
-            }
-        };
+        let (hours, mins, secs) = now_hm();
 
         draw_clock_face(display);
         // Hour hand advances with both hours and minutes (0.5°/min).
@@ -106,4 +173,79 @@ pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel
         remaining -= step as i64;
     }
     Screen::FacePlayer
+}
+
+// ---------------------------------------------------------------------------
+// Digital face
+// ---------------------------------------------------------------------------
+
+/// Format `(hours, minutes)` as `HH:MM` onto a small stack string.
+fn fmt_hm(h: u32, m: u32) -> heapless::String<5> {
+    let mut s = heapless::String::<5>::new();
+    let _ = write!(&mut s, "{h:02}:{m:02}");
+    s
+}
+
+/// Show the digital clock for `ms` milliseconds, checking the gesture channel
+/// so a triple-tap can jump to settings early. Returns the next screen.
+async fn show_digital(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
+    let mut last_drawn: Option<(u32, u32, u32)> = None;
+    let mut remaining = ms as i64;
+
+    while remaining > 0 {
+        let (h, m, s) = now_hm();
+
+        // Redraw only when the displayed second actually changes — the display
+        // is static and cheap otherwise, and this avoids a busy redraw loop.
+        if last_drawn != Some((h, m, s)) {
+            draw_digital(display, h, m, s);
+            last_drawn = Some((h, m, s));
+        }
+
+        let step = 200u32.min(remaining as u32);
+        embassy_time::Timer::after_millis(step as u64).await;
+        match tap::try_tap(tap) {
+            Some(Gesture::TripleTap) => return Screen::Settings,
+            // Single tap: sleep the display (returns to the same clock on wake).
+            Some(Gesture::Tap) => return Screen::Off(Prev::Clock),
+            _ => {}
+        }
+        remaining -= step as i64;
+    }
+    Screen::FacePlayer
+}
+
+/// Render the digital clock face into the buffer and flush it.
+fn draw_digital(display: &mut Display, h: u32, m: u32, s: u32) {
+    display.clear_buffer();
+    display.set_font(&FONT_5X7);
+    display.set_text_color(true);
+
+    // Large `HH:MM` — 5 glyphs at 3x scale (each 6x8 → 18x24).
+    let hm = fmt_hm(h, m);
+    let hm_w = hm.len() as i16 * 18;
+    display.set_text_size(3);
+    display.draw_str_with((config::SCREEN_WIDTH as i16 - hm_w) / 2, 6, &hm, &FONT_5X7);
+
+    // Seconds readout below, at 2x scale, centred under the time.
+    display.set_text_size(2);
+    let mut secs = heapless::String::<2>::new();
+    let _ = write!(&mut secs, "{s:02}");
+    let secs_w = secs.len() as i16 * 12;
+    display.draw_str_with((config::SCREEN_WIDTH as i16 - secs_w) / 2, 38, &secs, &FONT_5X7);
+
+    let _ = display.flush();
+}
+
+// ---------------------------------------------------------------------------
+// Public dispatcher
+// ---------------------------------------------------------------------------
+
+/// Show the configured clock face for `ms` milliseconds. Returns the next
+/// screen (settings on triple-tap, asleep on single-tap, face player on end).
+pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
+    match clock_style() {
+        ClockStyle::Analog => show_analog(display, ms, tap).await,
+        ClockStyle::Digital => show_digital(display, ms, tap).await,
+    }
 }

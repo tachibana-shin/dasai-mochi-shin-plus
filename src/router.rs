@@ -57,6 +57,8 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
     let mut brightness = crate::storage::load_brightness();
     // Restore the persisted timezone offset so the clock honours it on boot.
     crate::time::init_gmt_offset();
+    // Restore the persisted clock-face style (analog/digital).
+    clock::init_clock_style();
 
     // `None` when the SD card is unusable / has no faces.
     let mut player = face_player::Player::new(driver);

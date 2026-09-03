@@ -158,6 +158,10 @@ pub struct ClockFace {
 
 pub const CLOCK: ClockFace = ClockFace { cx: 64, cy: 32, r: 27 };
 
+/// Default clock-face style persisted to flash. `0` = analog, `1` = digital.
+/// Used when the config sector is fresh/never written.
+pub const CLOCK_DEFAULT_STYLE: u8 = 0;
+
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
