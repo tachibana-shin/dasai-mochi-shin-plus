@@ -12,15 +12,22 @@ use esp_println::println;
 use oled_i2c::{Font, TextOverflow};
 
 use crate::config;
-use crate::drivers::screen::Display;
+use crate::drivers::screen::{self, Display};
 use crate::drivers::sd::SdDriver;
 use crate::qgif::{assets::INTRO_QGIF, QgifHeader};
 use crate::router;
+use crate::storage;
 
 /// Heavy display task entry point: run the boot sequence, then the router.
 pub async fn run_ui(display: Display, driver: SdDriver) -> ! {
     // ---- SH1106 OLED over I2C (already initialised; owns the bus) ----
     let mut display = display;
+
+    // Apply the persisted brightness **immediately**, before anything is
+    // drawn on screen. The display otherwise starts at the compile-time
+    // default baked into `SCREEN_CONFIG` instead of the user's stored level,
+    // so the boot sequence could look far brighter/dimmer than configured.
+    screen::set_brightness(&mut display, storage::load_brightness());
 
     // ---- Boot intro from firmware memory (async so the sensor task stays
     // live even during boot) ----
