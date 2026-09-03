@@ -161,9 +161,22 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, &s, &FONT_5X7);
         }
         TileKind::WifiToggle => {
-            let s = if crate::wifi::wifi_enabled() { "ON" } else { "OFF" };
-            let w = s.len() as i16 * glyph_w;
-            display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
+            // Show the connected network name when joined (so the user can see
+            // which AP they're on), falling back to the plain ON/OFF state.
+            let on = crate::wifi::wifi_enabled();
+            let text: heapless::String<32> = if !on {
+                "OFF".try_into().unwrap()
+            } else if let Some(ssid) = crate::wifi::connected_ssid() {
+                ssid
+            } else {
+                "ON".try_into().unwrap()
+            };
+            // Truncate from the left so the value hugs the right margin and
+            // can't overlap the label, keeping the start of the SSID visible.
+            let max_chars = (right - 33 /* "Wi-Fi" label + pad */) / glyph_w;
+            let shown = &text[..text.len().min(max_chars as usize)];
+            let w = shown.len() as i16 * glyph_w;
+            display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, shown, &FONT_5X7);
         }
         TileKind::ForceAp => {
             // No value; just a hint that it's a one-shot action.
