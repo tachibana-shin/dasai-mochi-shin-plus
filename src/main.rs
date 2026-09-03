@@ -17,11 +17,13 @@ mod router;
 mod storage;
 mod task;
 mod ui;
+mod wifi;
 
 use esp_backtrace as _;
 use esp_println::println;
 use embassy_executor::Spawner;
 use esp_hal::peripherals::Peripherals;
+use esp_hal::ram;
 
 // esp-alloc provides the `#[global_allocator]` for the embassy executor / async.
 #[allow(unused_imports)]
@@ -36,6 +38,12 @@ esp_bootloader_esp_idf::esp_app_desc!();
 async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     println!("Dasai Mochi Shin - boot");
+
+    // Reserve heap for the radio stack / network (esp-radio + smoltcp need
+    // dynamic allocation). 64 KB comes from RAM reclaimed after the 2nd-stage
+    // bootloader (otherwise unused), the rest from normal DRAM.
+    esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 48 * 1024);
+    esp_alloc::heap_allocator!(size: 20 * 1024);
 
     // Start the RTOS scheduler (time driver + software interrupt) that the
     // thread-mode executor runs on.
@@ -53,6 +61,7 @@ async fn main(spawner: Spawner) -> ! {
         GPIO2,
         GPIO3,
         GPIO4,
+        WIFI,
         ..
     } = peripherals;
 
@@ -68,6 +77,9 @@ async fn main(spawner: Spawner) -> ! {
         GPIO3,
         GPIO4,
     );
+
+    // Wi-Fi provisioning: SoftAP `DasaiSetup` + auto-connect to saved network.
+    wifi::spawn(spawner, WIFI);
 
     // Keep the (main) "boot" task alive forever. The two forever-tasks spawned
     // above already keep the executor running; this simply prevents the intial
