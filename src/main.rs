@@ -16,6 +16,7 @@ mod qgif;
 mod router;
 mod storage;
 mod task;
+mod time;
 mod ui;
 mod wifi;
 

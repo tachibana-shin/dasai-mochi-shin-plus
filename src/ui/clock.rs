@@ -13,6 +13,7 @@ use crate::config;
 use crate::drivers::screen::Display;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::{Prev, Screen};
+use crate::time;
 
 /// Approximate `sin(deg)` as a fixed-point integer scaled by 1024, using the
 /// Bhaskara I rational approximation (error < 0.003 — irrelevant on a 1bpp
@@ -71,14 +72,23 @@ pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel
     display.clear_buffer();
     let mut remaining = ms as i64;
     while remaining > 0 {
-        let uptime_ms = EspInstant::now().duration_since_epoch().as_millis();
-        let secs = (uptime_ms / 1000) % 60;
-        let mins = (uptime_ms / 60_000) % 60;
-        let hours = (uptime_ms / 3_600_000) % 12;
+        // Prefer the NTP-synced wall-clock time; fall back to raw uptime when
+        // we've never synced (the board has no RTC).
+        let (hours, mins, secs) = match time::wall_clock() {
+            Some((h, m, s)) => (h, m, s),
+            None => {
+                let uptime_ms = EspInstant::now().duration_since_epoch().as_millis();
+                (
+                    ((uptime_ms / 3_600_000) % 12) as u32,
+                    ((uptime_ms / 60_000) % 60) as u32,
+                    ((uptime_ms / 1000) % 60) as u32,
+                )
+            }
+        };
 
         draw_clock_face(display);
         // Hour hand advances with both hours and minutes (0.5°/min).
-        draw_hand(display, 12, (hours * 30 + mins as u64 / 2) as i32, true);
+        draw_hand(display, 12, (hours * 30 + mins / 2) as i32, true);
         draw_hand(display, 20, (mins * 6) as i32, true);
         // Second hand is a little longer and visibly ticks each second.
         draw_hand(display, 24, (secs * 6) as i32, true);

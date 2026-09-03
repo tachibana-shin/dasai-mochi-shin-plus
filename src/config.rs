@@ -247,3 +247,18 @@ pub struct Settings {
 }
 
 pub const SETTINGS: Settings = Settings { poll_ms: 20 };
+
+// ---------------------------------------------------------------------------
+// Time (NTP wall-clock)
+// ---------------------------------------------------------------------------
+
+/// Wall-clock / timezone tuning. NTP always reports **UTC**; the clock face
+/// displays `UTC + gmt_offset_hours`. Defaults to +7 (Indochina Time, Vietnam).
+/// This will later become user-adjustable; `time::set_gmt_offset()` / a config
+/// store can update [`TIME`] from a static loaded out of flash.
+pub struct Time {
+    /// Timezone offset in whole hours added to the UTC time from NTP.
+    pub gmt_offset_hours: i32,
+}
+
+pub const TIME: Time = Time { gmt_offset_hours: 7 };

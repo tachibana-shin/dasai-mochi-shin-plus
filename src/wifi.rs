@@ -21,13 +21,14 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_executor::Spawner;
 use embassy_net::{
-    IpListenEndpoint, Ipv4Cidr, Runner, StackResources, StaticConfigV4, tcp::TcpSocket,
+    IpListenEndpoint, Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4, dns::DnsSocket,
+    tcp::TcpSocket,
 };
 use embassy_time::{Duration, Timer};
 use esp_println::println;
 use esp_radio::wifi::{
     AuthenticationMethod, AuthenticationMethodConfig, Config, ControllerConfig, Interface,
-    WifiController,
+    WifiController, PowerSaveMode,
     ap::{AccessPointConfig, AccessPointInfo},
     scan::ScanConfig,
     sta::StationConfig,
@@ -45,6 +46,20 @@ const GW_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 4, 1);
 const GW_IP_STR: &[u8] = b"192.168.4.1";
 const HTTP_PORT: u16 = 80;
 const MAX_APS: usize = 40;
+
+// ---------------------------------------------------------------------------
+// NTP settings
+// ---------------------------------------------------------------------------
+/// Hostname resolved (via the STA's DHCP-provided DNS) to get the time from
+/// Google's public NTP anycast pool.
+const NTP_HOST: &str = "time.google.com";
+/// NTP service port.
+const NTP_PORT: u16 = 123;
+/// Seconds between 1900-01-01 (NTP epoch) and 1970-01-01 (Unix epoch).
+const NTP_UNIX_OFFSET: u64 = 2_208_988_800;
+/// How often we re-sync the clock while connected.
+const NTP_REFRESH: Duration = Duration::from_secs(3600);
+
 /// Hard cap on how long a scan may take before we give up (avoids hanging the
 /// driver when the radio is busy serving the SoftAP).
 const SCAN_TIMEOUT: Duration = Duration::from_secs(6);
@@ -133,11 +148,20 @@ pub fn spawn(spawner: Spawner, wi_fi: esp_hal::peripherals::WIFI<'static>) {
 
     let ap_device = Interface::access_point();
     let sta_device = Interface::station();
-    let controller = WifiController::new(
+    let mut controller = WifiController::new(
         wi_fi,
         ControllerConfig::default().with_initial_config(initial_config),
     )
     .expect("failed to init WifiController");
+
+    // Power / heat optimisation (esp-radio `unstable` API):
+    // - Modem-sleep: the radio sleeps between beacons instead of listening
+    //   continuously, which cuts idle current noticeably.
+    // - Lower max TX power: the board is close to the router and doesn't need
+    //   full 20 dBm; 9 dBm (36 * 0.25 dBm) still reaches it while emitting far
+    //   less heat. These are also applied after every connect in the driver.
+    let _ = controller.set_power_saving(PowerSaveMode::Minimum);
+    let _ = controller.set_max_tx_power(36);
 
     let ap_config = embassy_net::Config::ipv4_static(StaticConfigV4 {
         address: Ipv4Cidr::new(GW_IP, 24),
@@ -154,10 +178,10 @@ pub fn spawn(spawner: Spawner, wi_fi: esp_hal::peripherals::WIFI<'static>) {
         mk_static!(StackResources<5>, StackResources::<5>::new()),
         seed,
     );
-    let (_sta_stack, sta_runner) = embassy_net::new(
+    let (sta_stack, sta_runner) = embassy_net::new(
         sta_device,
         sta_config,
-        mk_static!(StackResources<4>, StackResources::<4>::new()),
+        mk_static!(StackResources<5>, StackResources::<5>::new()),
         seed,
     );
 
@@ -166,6 +190,7 @@ pub fn spawn(spawner: Spawner, wi_fi: esp_hal::peripherals::WIFI<'static>) {
     spawner.spawn(net_task(sta_runner).unwrap());
     spawner.spawn(dhcp_task(ap_stack).unwrap());
     spawner.spawn(dns_task(ap_stack).unwrap());
+    spawner.spawn(ntp_task(sta_stack).unwrap());
     spawner.spawn(provision_server(ap_stack).unwrap());
 }
 
@@ -457,6 +482,100 @@ fn build_dns_response(req: &[u8], out: &mut [u8]) -> usize {
     out[pos..pos + 4].copy_from_slice(&GW_IP.octets());
     pos += 4;
     pos
+}
+
+// ---------------------------------------------------------------------------
+// NTP time task — resolves `time.google.com`, does a UDP SNTP round-trip and
+// stores the Unix time into [`crate::time`] so the clock UI can show the real
+// wall-clock time. Re-syncs every [`NTP_REFRESH`] while the STA is up.
+// ---------------------------------------------------------------------------
+
+#[embassy_executor::task]
+async fn ntp_task(stack: Stack<'static>) -> ! {
+    use edge_nal::{UdpBind, UdpReceive, UdpSend};
+    use edge_nal_embassy::{Udp, UdpBuffers};
+
+    // DNS resolution through the STA's DHCP-provided DNS server.
+    let dns = DnsSocket::new(stack);
+
+    let buffers = UdpBuffers::<2, 512, 512, 2>::new();
+    let udp = Udp::new(stack, &buffers);
+    let mut bound = udp
+        .bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)))
+        .await
+        .expect("bind NTP udp");
+
+    let mut pkt = [0u8; 48];
+    let mut resp = [0u8; 48];
+
+    loop {
+        // Wait for the STA to actually be connected and have an IP.
+        if !stack.is_config_up() {
+            stack.wait_config_up().await;
+        }
+
+        // Resolve the NTP host (fresh each round so DNS failures don't stick).
+        // `DnsSocket::query()` blocks for as long as it takes with no built-in
+        // timeout, so we race it against a timer to avoid wedging the task (and
+        // silently never synchronising the clock).
+        let mut server = Ipv4Addr::new(216, 239, 35, 0); // Google NTP anycast fallback
+        let query = dns.query(NTP_HOST, embassy_net::dns::DnsQueryType::A);
+        let resolved = embassy_futures::select::select(
+            query,
+            Timer::after(Duration::from_secs(5)),
+        )
+        .await;
+        if let embassy_futures::select::Either::First(Ok(mut addrs)) = resolved {
+            while let Some(a) = addrs.pop() {
+                if let embassy_net::IpAddress::Ipv4(v4) = a {
+                    server = Ipv4Addr::from(v4);
+                    break;
+                }
+            }
+            println!("[ntp] resolved {} -> {}", NTP_HOST, server);
+        } else {
+            println!("[ntp] DNS for {NTP_HOST} timed out; falling back to {}", server);
+        }
+
+        let ntp_peer = SocketAddr::V4(SocketAddrV4::new(server, NTP_PORT));
+
+        // Build a simple SNTP client request (mode 3 = client).
+        pkt.fill(0);
+        pkt[0] = 0x1B; // LI=0, VN=3, mode=3
+
+        let _ = bound.send(ntp_peer, &pkt).await;
+
+        // Wait (bounded) for a valid 48-byte NTP response.
+        let mut unix: Option<i64> = None;
+        let deadline = embassy_time::Instant::now() + Duration::from_secs(5);
+        while embassy_time::Instant::now() < deadline {
+            match bound.receive(&mut resp).await {
+                Ok((len, _peer)) => {
+                    if len >= 48 {
+                        // Transmit timestamp is bytes 40..48 (seconds since 1900).
+                        let secs = u32::from_be_bytes([
+                            resp[40], resp[41], resp[42], resp[43],
+                        ]);
+                        unix = Some((secs as u64 - NTP_UNIX_OFFSET) as i64);
+                    }
+                    break;
+                }
+                Err(_) => {
+                    Timer::after(Duration::from_millis(50)).await;
+                }
+            }
+        }
+
+        match unix {
+            Some(u) => {
+                crate::time::set_ntp_time(u);
+                println!("[ntp] synced time.google.com -> unix {u}");
+            }
+            None => println!("[ntp] sync failed (no response)"),
+        }
+
+        Timer::after(NTP_REFRESH).await;
+    }
 }
 
 // ---------------------------------------------------------------------------

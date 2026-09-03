@@ -35,7 +35,7 @@ esp-hal = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c9240a08b35cb6
 esp-rtos = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c9240a08b35cb6bfab7eff8cf336cb2797d07946", package = "esp-rtos", version = "0.4", features = ["embassy", "esp-alloc", "esp-radio", "esp32c3"] }
 # WiFi / BLE / ESP-NOW radio driver (successor to esp-wifi). Requires esp-hal
 # `unstable` and the esp-rtos `esp-radio` scheduler feature above.
-esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c9240a08b35cb6bfab7eff8cf336cb2797d07946", package = "esp-radio", version = "1.0.0-beta.0", features = ["wifi", "esp32c3", "esp-alloc", "log-04"] }
+esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c9240a08b35cb6bfab7eff8cf336cb2797d07946", package = "esp-radio", version = "1.0.0-beta.0", features = ["wifi", "esp32c3", "esp-alloc", "log-04", "unstable"] }
 # TCP/IP stack over smoltcp, wired to the esp-radio device via embassy-net-driver.
 embassy-net = { version = "0.9", features = ["dhcpv4", "medium-ethernet", "tcp", "dns", "udp"] }
 embassy-futures = "0.1"
