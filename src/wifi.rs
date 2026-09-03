@@ -271,7 +271,8 @@ async fn provision_server(stack: embassy_net::Stack<'static>) -> ! {
                 let _ = socket.flush().await;
             }
         } else {
-            let _ = socket.write_all(FORM_HTML).await;
+            let _ = socket.write_all(HTTP_200_HEADER).await;
+            let _ = socket.write_all(FORM_BODY).await;
             let _ = socket.flush().await;
         }
 
@@ -280,30 +281,14 @@ async fn provision_server(stack: embassy_net::Stack<'static>) -> ! {
     }
 }
 
-/// The provisioning HTML form (served on `GET /`).
-const FORM_HTML: &[u8] = br#"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n
-<!DOCTYPE html>
-<html>
-<head><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dasai Mochi Shin - WiFi Setup</title>
-<style>
-  body { font-family: sans-serif; max-width: 360px; margin: 2em auto; padding: 0 1em; }
-  input { width: 100%; padding: .7em; margin: .4em 0; box-sizing: border-box; font-size: 1em; }
-  button { width: 100%; padding: .8em; font-size: 1em; background: #2b7; color: #fff; border: 0; }
-  h1 { font-size: 1.3em; }
-</style>
-</head>
-<body>
-  <h1>Dasai Mochi Shin</h1>
-  <p>Connect to your WiFi network. The device will save these and reboot to connect.</p>
-  <form method="POST" action="/">
-    <input name="ssid" placeholder="WiFi name (SSID)" autocomplete="off" required>
-    <input name="password" type="password" placeholder="WiFi password" autocomplete="off">
-    <button type="submit">Save &amp; connect</button>
-  </form>
-</body>
-</html>
-"#;
+/// Standard `200 OK` HTTP header with a real CRLF line terminator (sent before
+/// the HTML body). Kept separate from the body so the escapes are interpreted
+/// (a raw byte string would send literal `\r\n` characters and corrupt the
+/// response, which is why the form previously appeared as an empty response).
+const HTTP_200_HEADER: &[u8] = b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n";
+
+/// The provisioning HTML form body (served on `GET /`).
+const FORM_BODY: &[u8] = b"\n<!DOCTYPE html>\n<html>\n<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Dasai Mochi Shin - WiFi Setup</title>\n<style>\n  body { font-family: sans-serif; max-width: 360px; margin: 2em auto; padding: 0 1em; }\n  input { width: 100%; padding: .7em; margin: .4em 0; box-sizing: border-box; font-size: 1em; }\n  button { width: 100%; padding: .8em; font-size: 1em; background: #2b7; color: #fff; border: 0; }\n  h1 { font-size: 1.3em; }\n</style>\n</head>\n<body>\n  <h1>Dasai Mochi Shin</h1>\n  <p>Connect to your WiFi network. The device will save these and reboot to connect.</p>\n  <form method=\"POST\" action=\"/\">\n    <input name=\"ssid\" placeholder=\"WiFi name (SSID)\" autocomplete=\"off\" required>\n    <input name=\"password\" type=\"password\" placeholder=\"WiFi password\" autocomplete=\"off\">\n    <button type=\"submit\">Save &amp; connect</button>\n  </form>\n</body>\n</html>\n";
 
 /// Locate the first occurrence of `needle` in `haystack`.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
