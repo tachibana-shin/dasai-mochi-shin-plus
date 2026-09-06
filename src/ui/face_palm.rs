@@ -68,12 +68,13 @@ pub async fn show_palm(display: &mut Display, ms: u32, tap: &'static TapChannel)
     Screen::FacePlayer
 }
 
-/// Slow frond sway angle in degrees: ±8°, a full cycle every ~15 seconds.
-/// The sway value only changes every 500 ms so the face redraws at 2 fps
-/// rather than 10 fps — barely noticeable motion but much less CPU.
+/// Frond sway angle in degrees: ±8°, a full cycle every ~14.4 seconds.
+/// The sway value changes every 200 ms so the face redraws at ~5 fps — a
+/// noticeably livelier breeze while still cheap for the single-threaded
+/// executor (an order of magnitude below the original 10 fps figure).
 fn sway_now() -> i32 {
     let ms = EspInstant::now().duration_since_epoch().as_millis();
-    let deg = (((ms / 500) * 12) % 360) as i32; // 24°/s → 15 s cycle, step 0.5 s
+    let deg = (((ms / 200) * 5) % 360) as i32; // 25°/s → 14.4 s cycle, step 0.2 s
     (geom::sin_fp(deg) * 8) / 1024
 }
 
