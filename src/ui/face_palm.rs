@@ -27,13 +27,13 @@ use crate::ui::geom;
 const CROWN: (i16, i16) = (22, 17);
 /// Trunk base, resting on the sand.
 const TRUNK_BASE: (i16, i16) = (26, 60);
-/// One frond angle (degrees clockwise from 12 o'clock) per palm leaf.
-/// Seven well-spaced blades around the crown (one high on each side plus a
-/// drooping pair beside the trunk). At 128x64 the serrated leaflets of a real
-/// coconut palm can't be rendered, so the leaves are drawn as smooth lens-
-/// shaped blades kept clearly apart by dark gaps — mid-width 3 px, not 4,
-/// so the crown stays bushy without merging into a solid mass.
-const FROND_DEG: [i32; 7] = [10, 55, 100, 150, 250, 295, 352];
+/// One frond's radial direction (degrees clockwise from 12 o'clock).
+/// Six arched, well-spaced blades. Each leaf starts ~15° above its radial,
+/// arcs over and droops ~35° before the tip — the classic palm-frond arch —
+/// so the crown reads as curved drooping leaves instead of straight spokes.
+/// A pair hangs down beside the trunk on each side, the top one arching
+/// across the crown centre.
+const FROND_DEG: [i32; 6] = [10, 60, 115, 245, 300, 352];
 
 /// Show the palm clock for `ms` milliseconds, checking the gesture channel so a
 /// triple-tap can jump to settings early. Returns the next screen.
@@ -110,32 +110,34 @@ fn draw_sun(display: &mut Display) {
 /// tapering to a point) that pivots with `sway` — the classic full coconut-palm
 /// silhouette rather than a single curved line.
 fn draw_fronds(display: &mut Display, sway: i32) {
+    // (length from crown, % of the arch bend applied, blade half-width in px).
+    // Five points per blade: the leaf rises slightly, then bends over and
+    // droops, widest around mid-length and tapering to a point at the tip.
+    let steps: [(i16, i16, i16); 5] = [
+        (2, 0, 1),
+        (7, 25, 3),
+        (12, 55, 3),
+        (17, 85, 2),
+        (23, 100, 0),
+    ];
     for &a in &FROND_DEG {
-        // Fronds on the right droop clockwise; on the left, counter-clockwise,
-        // so both sides bend downward.
-        let droop = if a <= 180 { 26 } else { -26 };
         let a0 = a + sway;
-        // (length from crown, droop applied so far, blade half-width in px).
-        // The blade is widest around a third of the way out and tapers to the
-        // tip, with the droop growing towards the end for a gentle arch.
-        let rachis = [
-            (2i16, 0, 1i16),
-            (9, droop / 3, 3),
-            (16, droop * 2 / 3, 2),
-            (22, droop, 0),
-        ];
-        let mut up = [(0i16, 0i16); 4];
-        let mut lo = [(0i16, 0i16); 4];
-        for (i, &(len, d, w)) in rachis.iter().enumerate() {
-            let ang = a0 + d;
+        // Arc direction: blades on the right droop clockwise, on the left
+        // counter-clockwise, so both sides bend downward.
+        let s = a0 - 15;
+        let e = s + if a0 <= 180 { 35 } else { -35 };
+        let mut up = [(0i16, 0i16); 5];
+        let mut lo = [(0i16, 0i16); 5];
+        for (i, &(len, t, w)) in steps.iter().enumerate() {
+            let ang = s + (e - s) * t as i32 / 100;
             let (x, y) = geom::ray(CROWN.0, CROWN.1, len, ang);
             // Blade edges offset perpendicular to the leaf's local direction.
             up[i] = geom::ray(x, y, w, ang - 90);
             lo[i] = geom::ray(x, y, w, ang + 90);
         }
         // Two triangles per strip fill the quad between successive rachis
-        // points, so the blade is a continuous tapered shape.
-        for i in 0..3 {
+        // points, so the blade is a continuous tapered, arched shape.
+        for i in 0..4 {
             let (u0, l0) = (up[i], lo[i]);
             let (u1, l1) = (up[i + 1], lo[i + 1]);
             display.fill_triangle(u0.0, u0.1, l0.0, l0.1, u1.0, u1.1, true);
