@@ -28,10 +28,11 @@ const CROWN: (i16, i16) = (22, 17);
 /// Trunk base, resting on the sand.
 const TRUNK_BASE: (i16, i16) = (26, 60);
 /// One frond angle (degrees clockwise from 12 o'clock) per palm leaf.
-/// Ten leaves: a near-even fan around the crown plus two slim hanging leaves
-/// (150°/210°) that droop down beside the trunk. That keeps the crown full
-/// and round without letting the centre of the tree turn into a solid wedge.
-const FROND_DEG: [i32; 10] = [10, 45, 80, 115, 150, 210, 245, 280, 315, 350];
+/// Seven big, clearly separated blades. At 128x64 we can't render the
+/// serrated (pinnate) leaflets of a real coconut palm, so instead each leaf
+/// is a large lens-shaped blade with visible gaps to its neighbours — the
+/// low-res equivalent of a bushy but well-spaced crown.
+const FROND_DEG: [i32; 7] = [10, 55, 100, 150, 250, 295, 340];
 
 /// Show the palm clock for `ms` milliseconds, checking the gesture channel so a
 /// triple-tap can jump to settings early. Returns the next screen.
@@ -111,19 +112,16 @@ fn draw_fronds(display: &mut Display, sway: i32) {
     for &a in &FROND_DEG {
         // Fronds on the right droop clockwise; on the left, counter-clockwise,
         // so both sides bend downward.
-        let droop = if a <= 180 { 28 } else { -28 };
+        let droop = if a <= 180 { 24 } else { -24 };
         let a0 = a + sway;
-        // The two hanging leaves that pass closest to the trunk are drawn
-        // slim so the middle of the tree stays open instead of going solid.
-        let slim = (150..=210).contains(&a);
         // (length from crown, droop applied so far, blade half-width in px).
         // The blade is widest around a third of the way out and tapers to the
         // tip, with the droop growing towards the end for a gentle arch.
         let rachis = [
-            (2i16, 0, 1i16),
-            (10, droop / 3, if slim { 2 } else { 3 }),
-            (16, droop * 2 / 3, if slim { 1 } else { 2 }),
-            (22, droop, 0),
+            (2i16, 0, 2i16),
+            (9, droop / 3, 4),
+            (15, droop * 2 / 3, 3),
+            (21, droop, 0),
         ];
         let mut up = [(0i16, 0i16); 4];
         let mut lo = [(0i16, 0i16); 4];
