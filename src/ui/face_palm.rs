@@ -28,7 +28,9 @@ const CROWN: (i16, i16) = (22, 17);
 /// Trunk base, resting on the sand.
 const TRUNK_BASE: (i16, i16) = (26, 60);
 /// One frond angle (degrees clockwise from 12 o'clock) per palm leaf.
-const FROND_DEG: [i32; 10] = [10, 45, 80, 115, 150, 185, 220, 255, 290, 325];
+/// Eight well-spaced leaves, keeping out of the downward zone (~140°–220°)
+/// so the crown stays recognisable rather than merging into a solid blob.
+const FROND_DEG: [i32; 8] = [15, 55, 95, 135, 225, 265, 305, 345];
 
 /// Show the palm clock for `ms` milliseconds, checking the gesture channel so a
 /// triple-tap can jump to settings early. Returns the next screen.
@@ -62,10 +64,12 @@ pub async fn show_palm(display: &mut Display, ms: u32, tap: &'static TapChannel)
     Screen::FacePlayer
 }
 
-/// Slow frond sway angle in degrees: ±8°, a full cycle every ~6 seconds.
+/// Slow frond sway angle in degrees: ±8°, a full cycle every ~15 seconds.
+/// The sway value only changes every 500 ms so the face redraws at 2 fps
+/// rather than 10 fps — barely noticeable motion but much less CPU.
 fn sway_now() -> i32 {
     let ms = EspInstant::now().duration_since_epoch().as_millis();
-    let deg = (((ms / 100) * 6) % 360) as i32; // 60°/s → 6 s cycle
+    let deg = (((ms / 500) * 12) % 360) as i32; // 24°/s → 15 s cycle, step 0.5 s
     (geom::sin_fp(deg) * 8) / 1024
 }
 
@@ -112,9 +116,9 @@ fn draw_fronds(display: &mut Display, sway: i32) {
         // The blade is widest around a third of the way out and tapers to the
         // tip, with the droop growing towards the end for a gentle arch.
         let rachis = [
-            (2i16, 0, 2i16),
-            (9, droop / 3, 4),
-            (15, droop * 2 / 3, 3),
+            (2i16, 0, 1i16),
+            (9, droop / 3, 3),
+            (15, droop * 2 / 3, 2),
             (20, droop, 0),
         ];
         let mut up = [(0i16, 0i16); 4];
