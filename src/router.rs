@@ -105,7 +105,15 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
             },
             // An analog clock interlude between faces.
             Screen::Clock => {
-                clock::show_clock(display, crate::config::PLAYBACK.clock_duration_ms as u32, tap).await
+                // TEMP(dev-test): while DEV_SKIP_BOOT is set the clock runs
+                // forever (~49 days) so the palm face stays on screen while we
+                // iterate on it. Revert with DEV_SKIP_BOOT.
+                let dur = if config::DEV_SKIP_BOOT {
+                    u32::MAX
+                } else {
+                    crate::config::PLAYBACK.clock_duration_ms as u32
+                };
+                clock::show_clock(display, dur, tap).await
             }
             Screen::Settings => {
                 settings::show(display, tap, &mut brightness).await;
