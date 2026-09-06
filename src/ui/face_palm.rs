@@ -27,14 +27,17 @@ use crate::ui::geom;
 const CROWN: (i16, i16) = (22, 17);
 /// Trunk base, resting on the sand.
 const TRUNK_BASE: (i16, i16) = (26, 60);
-/// One frond's radial direction (degrees clockwise from 12 o'clock).
-/// Seven arched blades, 26 px long — big for the 128x64 panel. Each leaf
-/// starts ~15° above its radial, arcs over and droops ~52° before the tip —
-/// the classic palm-frond arch — so the crown reads as clearly curved,
-/// drooping leaves instead of straight windmill spokes. The low-left leaf
-/// (275°) is angled so its tip never swings into the trunk even at max sway
-/// (+8° → tip ~200°, ~7 px clear of the trunk).
+/// One frond's radial direction (degrees clockwise from 12 o'clock) with its
+/// length scale (10 = full 26 px). Seven arched blades. Each leaf starts
+/// ~15° above its radial, arcs over and droops ~52° before the tip — the
+/// classic palm-frond arch — so the crown reads as clearly curved, drooping
+/// leaves instead of straight windmill spokes. The two low "skirt" leaves
+/// (120° and 275°) are 20% shorter so they hang to roughly the middle of the
+/// trunk; the low-left one is also angled so its tip never swings into the
+/// trunk even at max sway (+8° → tip ~200°, ~7 px clear of the trunk).
 const FROND_DEG: [i32; 7] = [10, 65, 120, 275, 310, 345, 355];
+/// Per-frond length scale (10 = full length) matching [`FROND_DEG`].
+const FROND_SCALE: [i16; 7] = [10, 10, 8, 8, 10, 10, 10];
 
 /// Show the palm clock for `ms` milliseconds, checking the gesture channel so a
 /// triple-tap can jump to settings early. Returns the next screen.
@@ -68,13 +71,12 @@ pub async fn show_palm(display: &mut Display, ms: u32, tap: &'static TapChannel)
     Screen::FacePlayer
 }
 
-/// Frond sway angle in degrees: ±8°, a full cycle every ~14.4 seconds.
-/// The sway value changes every 200 ms so the face redraws at ~5 fps — a
-/// noticeably livelier breeze while still cheap for the single-threaded
-/// executor (an order of magnitude below the original 10 fps figure).
+/// Slow frond sway angle in degrees: ±8°, a full cycle every ~15 seconds.
+/// The sway value only changes every 500 ms so the face redraws at 2 fps
+/// rather than 10 fps — barely noticeable motion but much less CPU.
 fn sway_now() -> i32 {
     let ms = EspInstant::now().duration_since_epoch().as_millis();
-    let deg = (((ms / 200) * 5) % 360) as i32; // 25°/s → 14.4 s cycle, step 0.2 s
+    let deg = (((ms / 500) * 12) % 360) as i32; // 24°/s → 15 s cycle, step 0.5 s
     (geom::sin_fp(deg) * 8) / 1024
 }
 
@@ -123,7 +125,7 @@ fn draw_fronds(display: &mut Display, sway: i32) {
         (19, 85, 2),
         (26, 100, 0),
     ];
-    for &a in &FROND_DEG {
+    for (&a, k) in FROND_DEG.iter().zip(FROND_SCALE.iter()) {
         let a0 = a + sway;
         // Arc direction: blades on the right droop clockwise, on the left
         // counter-clockwise, so both sides bend downward.
@@ -132,6 +134,8 @@ fn draw_fronds(display: &mut Display, sway: i32) {
         let mut up = [(0i16, 0i16); 5];
         let mut lo = [(0i16, 0i16); 5];
         for (i, &(len, t, w)) in steps.iter().enumerate() {
+            // Skirt leaves scale down so they hang only halfway down the trunk.
+            let len = len * *k / 10;
             let ang = s + (e - s) * t as i32 / 100;
             let (x, y) = geom::ray(CROWN.0, CROWN.1, len, ang);
             // Blade edges offset perpendicular to the leaf's local direction.
