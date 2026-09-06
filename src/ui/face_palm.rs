@@ -98,21 +98,42 @@ fn draw_sun(display: &mut Display) {
     display.fill_circle(10, 8, 5, true);
 }
 
-/// The fan of drooping fronds, pivoted around the crown by `sway` degrees.
+/// The fan of fronds around the crown. Each leaf is drawn as a drooping,
+/// **blade-shaped** frond (a triangulated strip, widest at mid-length and
+/// tapering to a point) that pivots with `sway` — the classic full coconut-palm
+/// silhouette rather than a single curved line.
 fn draw_fronds(display: &mut Display, sway: i32) {
     for &a in &FROND_DEG {
         // Fronds on the right droop clockwise; on the left, counter-clockwise,
         // so both sides bend downward.
-        let droop = if a <= 180 { 24 } else { -24 };
+        let droop = if a <= 180 { 30 } else { -30 };
         let a0 = a + sway;
-        let (x1, y1) = geom::ray(CROWN.0, CROWN.1, 9, a0);
-        let (x2, y2) = geom::ray(CROWN.0, CROWN.1, 14, a0 + droop / 3);
-        let (x3, y3) = geom::ray(CROWN.0, CROWN.1, 18, a0 + droop * 2 / 3);
-        let (x4, y4) = geom::ray(CROWN.0, CROWN.1, 21, a0 + droop);
-        display.draw_line(CROWN.0, CROWN.1, x1, y1, true);
-        display.draw_line(x1, y1, x2, y2, true);
-        display.draw_line(x2, y2, x3, y3, true);
-        display.draw_line(x3, y3, x4, y4, true);
+        // (length from crown, droop applied so far, blade half-width in px).
+        // The blade is widest around a third of the way out and tapers to the
+        // tip, with the droop growing towards the end for a gentle arch.
+        let rachis = [
+            (2i16, 0, 2i16),
+            (9, droop / 3, 4),
+            (15, droop * 2 / 3, 3),
+            (20, droop, 0),
+        ];
+        let mut up = [(0i16, 0i16); 4];
+        let mut lo = [(0i16, 0i16); 4];
+        for (i, &(len, d, w)) in rachis.iter().enumerate() {
+            let ang = a0 + d;
+            let (x, y) = geom::ray(CROWN.0, CROWN.1, len, ang);
+            // Blade edges offset perpendicular to the leaf's local direction.
+            up[i] = geom::ray(x, y, w, ang - 90);
+            lo[i] = geom::ray(x, y, w, ang + 90);
+        }
+        // Two triangles per strip fill the quad between successive rachis
+        // points, so the blade is a continuous tapered shape.
+        for i in 0..3 {
+            let (u0, l0) = (up[i], lo[i]);
+            let (u1, l1) = (up[i + 1], lo[i + 1]);
+            display.fill_triangle(u0.0, u0.1, l0.0, l0.1, u1.0, u1.1, true);
+            display.fill_triangle(l0.0, l0.1, l1.0, l1.1, u1.0, u1.1, true);
+        }
     }
 }
 
@@ -123,7 +144,7 @@ fn draw_coconuts(display: &mut Display) {
     display.fill_circle(27, 17, 2, true);
 }
 
-/// The trunk: a gently curving double line (2 px thick) from sand to crown.
+/// The trunk: a gently curving triple line (3 px thick) from sand to crown.
 fn draw_trunk(display: &mut Display) {
     let segs = [
         (TRUNK_BASE.0, TRUNK_BASE.1, 24, 50),
@@ -134,7 +155,8 @@ fn draw_trunk(display: &mut Display) {
     ];
     for &(x0, y0, x1, y1) in &segs {
         display.draw_line(x0, y0, x1, y1, true);
-        display.draw_line(x0 + 2, y0, x1 + 2, y1, true); // thickness
+        display.draw_line(x0 + 1, y0, x1 + 1, y1, true);
+        display.draw_line(x0 + 2, y0, x1 + 2, y1, true);
     }
 }
 
