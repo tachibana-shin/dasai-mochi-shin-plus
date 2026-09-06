@@ -28,12 +28,13 @@ const CROWN: (i16, i16) = (22, 17);
 /// Trunk base, resting on the sand.
 const TRUNK_BASE: (i16, i16) = (26, 60);
 /// One frond's radial direction (degrees clockwise from 12 o'clock).
-/// Seven arched blades. Each leaf starts ~15° above its radial, arcs over
-/// and droops ~52° before the tip — the classic palm-frond arch — so the
-/// crown reads as clearly curved, drooping leaves instead of straight
-/// windmill spokes. Blades keep their full width through mid-length to stay
-/// bold, with dark gaps between them.
-const FROND_DEG: [i32; 7] = [10, 65, 120, 240, 295, 345, 355];
+/// Seven arched blades, 26 px long — big for the 128x64 panel. Each leaf
+/// starts ~15° above its radial, arcs over and droops ~52° before the tip —
+/// the classic palm-frond arch — so the crown reads as clearly curved,
+/// drooping leaves instead of straight windmill spokes. The low-left leaf
+/// (275°) is angled so its tip never swings into the trunk even at max sway
+/// (+8° → tip ~200°, ~7 px clear of the trunk).
+const FROND_DEG: [i32; 7] = [10, 65, 120, 275, 310, 345, 355];
 
 /// Show the palm clock for `ms` milliseconds, checking the gesture channel so a
 /// triple-tap can jump to settings early. Returns the next screen.
@@ -89,11 +90,12 @@ fn draw_palm(
     display.set_font(&FONT_5X7);
     display.set_text_color(true);
 
-    // Back to front: sun, fronds, coconuts, trunk, then foreground details.
+    // Back to front: sun, fronds, trunk, then the coconuts (which hang over
+    // the junction at the crown) and the foreground sand.
     draw_sun(display);
     draw_fronds(display, sway);
-    draw_coconuts(display);
     draw_trunk(display);
+    draw_coconuts(display);
     draw_sand(display);
     draw_readout(display, h, m, s, date);
 
@@ -116,9 +118,9 @@ fn draw_fronds(display: &mut Display, sway: i32) {
     let steps: [(i16, i16, i16); 5] = [
         (2, 0, 1),
         (7, 25, 3),
-        (12, 55, 3),
-        (17, 85, 2),
-        (23, 100, 0),
+        (13, 55, 3),
+        (19, 85, 2),
+        (26, 100, 0),
     ];
     for &a in &FROND_DEG {
         let a0 = a + sway;
@@ -146,11 +148,15 @@ fn draw_fronds(display: &mut Display, sway: i32) {
     }
 }
 
-/// A small cluster of coconuts tucked under the crown.
+/// A bunch of four coconuts hanging under the crown. Two sit at the neck of
+/// the tree (drawn over the trunk/crown junction), one hangs into the dark
+/// notch each side of the trunk — positioned so they stay clear of the
+/// frond skirt and read as a distinct cluster on the 1-bit panel.
 fn draw_coconuts(display: &mut Display) {
-    display.fill_circle(18, 16, 2, true);
-    display.fill_circle(23, 15, 2, true);
-    display.fill_circle(27, 17, 2, true);
+    display.fill_circle(19, 27, 2, true);
+    display.fill_circle(24, 26, 2, true);
+    display.fill_circle(17, 34, 2, true);
+    display.fill_circle(28, 35, 2, true);
 }
 
 /// The trunk: a gently curving triple line (3 px thick) from sand to crown.
