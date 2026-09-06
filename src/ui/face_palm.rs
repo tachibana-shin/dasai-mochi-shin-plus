@@ -148,15 +148,11 @@ fn draw_fronds(display: &mut Display, sway: i32) {
     }
 }
 
-/// A bunch of four coconuts hanging under the crown. Two sit at the neck of
-/// the tree (drawn over the trunk/crown junction), one hangs into the dark
-/// notch each side of the trunk — positioned so they stay clear of the
-/// frond skirt and read as a distinct cluster on the 1-bit panel.
+/// A single coconut nestled at the upper-right of the crown. Drawn after the
+/// fronds and trunk so it reads as a bright disc sitting in the top-right of
+/// the leaf mass on the 1-bit panel.
 fn draw_coconuts(display: &mut Display) {
-    display.fill_circle(19, 27, 2, true);
-    display.fill_circle(24, 26, 2, true);
-    display.fill_circle(17, 34, 2, true);
-    display.fill_circle(28, 35, 2, true);
+    display.fill_circle(29, 19, 2, true);
 }
 
 /// The trunk: a gently curving triple line (3 px thick) from sand to crown.
