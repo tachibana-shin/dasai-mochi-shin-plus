@@ -2,8 +2,8 @@
 //!
 //! A coconut palm on the left of the 128x64 panel: a slightly curved, leaning
 //! trunk, a fan of drooping fronds that **slowly sway**, a cluster of coconuts,
-//! a rising sun, gulls, a second palm on the far shore, a band of sea with
-//! whitecaps and a beach at the bottom. The right side shows
+//! a rising sun, gulls, a band of sea with whitecaps and a beach at the bottom.
+//! The right side shows
 //! the wall-clock time (`HH:MM`), seconds and date — all derived from the
 //! NTP-synced clock (see [`crate::time`]). The scene redraws once a second and
 //! whenever the sway moves, so it stays cheap on the single-threaded executor.
@@ -89,13 +89,12 @@ fn draw_palm(
     display.set_font(&FONT_5X7);
     display.set_text_color(true);
 
-    // Back to front: sun, fronds, coconuts, trunk, distant palm, birds, then
-    // the sea and beach, and finally the foreground readout.
+    // Back to front: sun, fronds, coconuts, trunk, birds, then the sea and
+    // beach, and finally the foreground readout.
     draw_sun(display);
     draw_fronds(display, sway);
     draw_coconuts(display);
     draw_trunk(display);
-    draw_distant_palm(display);
     draw_birds(display);
     draw_sea(display);
     draw_beach(display);
@@ -173,17 +172,6 @@ fn draw_trunk(display: &mut Display) {
         display.draw_line(x0, y0, x1, y1, true);
         display.draw_line(x0 + 1, y0, x1 + 1, y1, true);
         display.draw_line(x0 + 2, y0, x1 + 2, y1, true);
-    }
-}
-
-/// A smaller palm on the far shore, behind the sea band: a simple trunk plus a
-/// star of six short fronds. Drawn tiny so it reads as being further away.
-fn draw_distant_palm(display: &mut Display) {
-    let (cx, cy) = (47i16, 40i16);
-    display.draw_line(cx, cy, 48, 53, true);
-    for &a in &[10i32, 60, 120, 240, 300, 350] {
-        let (x, y) = geom::ray(cx, cy, 8, a);
-        display.draw_line(cx, cy, x, y, true);
     }
 }
 
