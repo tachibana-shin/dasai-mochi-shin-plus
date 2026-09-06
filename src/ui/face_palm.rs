@@ -31,8 +31,8 @@ const TRUNK_BASE: (i16, i16) = (26, 60);
 /// Seven arched blades. Each leaf starts ~15° above its radial, arcs over
 /// and droops ~52° before the tip — the classic palm-frond arch — so the
 /// crown reads as clearly curved, drooping leaves instead of straight
-/// windmill spokes. Leaves taper earlier (half-width 2 from mid-length) so
-/// the crown stays open despite the extra blade.
+/// windmill spokes. Blades keep their full width through mid-length to stay
+/// bold, with dark gaps between them.
 const FROND_DEG: [i32; 7] = [10, 65, 120, 240, 295, 345, 355];
 
 /// Show the palm clock for `ms` milliseconds, checking the gesture channel so a
@@ -112,12 +112,12 @@ fn draw_sun(display: &mut Display) {
 fn draw_fronds(display: &mut Display, sway: i32) {
     // (length from crown, % of the arch bend applied, blade half-width in px).
     // Five points per blade: the leaf rises slightly, then bends over and
-    // droops, widest just past the base and tapering to a point at the tip.
+    // droops, widest through mid-length and tapering to a point at the tip.
     let steps: [(i16, i16, i16); 5] = [
         (2, 0, 1),
         (7, 25, 3),
-        (12, 55, 2),
-        (17, 85, 1),
+        (12, 55, 3),
+        (17, 85, 2),
         (23, 100, 0),
     ];
     for &a in &FROND_DEG {
