@@ -28,11 +28,12 @@ const CROWN: (i16, i16) = (22, 17);
 /// Trunk base, resting on the sand.
 const TRUNK_BASE: (i16, i16) = (26, 60);
 /// One frond angle (degrees clockwise from 12 o'clock) per palm leaf.
-/// Seven big, clearly separated blades. At 128x64 we can't render the
-/// serrated (pinnate) leaflets of a real coconut palm, so instead each leaf
-/// is a large lens-shaped blade with visible gaps to its neighbours — the
-/// low-res equivalent of a bushy but well-spaced crown.
-const FROND_DEG: [i32; 7] = [10, 55, 100, 150, 250, 295, 340];
+/// Seven well-spaced blades around the crown (one high on each side plus a
+/// drooping pair beside the trunk). At 128x64 the serrated leaflets of a real
+/// coconut palm can't be rendered, so the leaves are drawn as smooth lens-
+/// shaped blades kept clearly apart by dark gaps — mid-width 3 px, not 4,
+/// so the crown stays bushy without merging into a solid mass.
+const FROND_DEG: [i32; 7] = [10, 55, 100, 150, 250, 295, 352];
 
 /// Show the palm clock for `ms` milliseconds, checking the gesture channel so a
 /// triple-tap can jump to settings early. Returns the next screen.
@@ -112,16 +113,16 @@ fn draw_fronds(display: &mut Display, sway: i32) {
     for &a in &FROND_DEG {
         // Fronds on the right droop clockwise; on the left, counter-clockwise,
         // so both sides bend downward.
-        let droop = if a <= 180 { 24 } else { -24 };
+        let droop = if a <= 180 { 26 } else { -26 };
         let a0 = a + sway;
         // (length from crown, droop applied so far, blade half-width in px).
         // The blade is widest around a third of the way out and tapers to the
         // tip, with the droop growing towards the end for a gentle arch.
         let rachis = [
-            (2i16, 0, 2i16),
-            (9, droop / 3, 4),
-            (15, droop * 2 / 3, 3),
-            (21, droop, 0),
+            (2i16, 0, 1i16),
+            (9, droop / 3, 3),
+            (16, droop * 2 / 3, 2),
+            (22, droop, 0),
         ];
         let mut up = [(0i16, 0i16); 4];
         let mut lo = [(0i16, 0i16); 4];
