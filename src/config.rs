@@ -174,6 +174,12 @@ pub struct Boot {
 
 pub const BOOT: Boot = Boot { banner_ms: 3000 };
 
+/// TEMP(dev-test): skip the boot intro + banner and go straight to the router
+/// (which currently starts on the palm face) so the new clock face is visible
+/// immediately. Set back to `false` to restore the normal boot sequence once
+/// the face is finalised.
+pub const DEV_SKIP_BOOT: bool = true;
+
 // ---------------------------------------------------------------------------
 // `.qgif` face format (array sizes are compile-time)
 // ---------------------------------------------------------------------------

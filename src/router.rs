@@ -18,6 +18,7 @@
 use crate::drivers::screen::{self, Display};
 use crate::drivers::sd::SdDriver;
 use crate::drivers::tap::{self, Gesture, TapChannel};
+use crate::config;
 use crate::qgif::{assets::INTRO_QGIF, QgifHeader};
 use crate::ui::clock;
 use crate::ui::face_player;
@@ -57,7 +58,7 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
     let mut brightness = crate::storage::load_brightness();
     // Restore the persisted timezone offset so the clock honours it on boot.
     crate::time::init_gmt_offset();
-    // Restore the persisted clock-face style (analog/digital).
+    // Restore the persisted clock-face style (analog/digital/palm).
     clock::init_clock_style();
 
     // `None` when the SD card is unusable / has no faces.
@@ -85,6 +86,15 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
         }
         Screen::Settings
     };
+
+    // TEMP(dev-test): while `config::DEV_SKIP_BOOT` is true we force the palm
+    // face and start on it (no face player / intro) so the new clock face is
+    // visible immediately at boot. To revert, delete the `if` branch below and
+    // set DEV_SKIP_BOOT back to false.
+    if config::DEV_SKIP_BOOT {
+        clock::set_clock_style(clock::ClockStyle::Palm);
+        current = Screen::Clock;
+    }
 
     loop {
         current = match current {

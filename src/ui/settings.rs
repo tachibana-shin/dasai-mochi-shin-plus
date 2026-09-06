@@ -197,10 +197,11 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, shown, &FONT_5X7);
         }
         TileKind::ClockFace => {
-            // "Analog" / "Digital" on the right.
+            // "Analog" / "Digital" / "Palm" on the right.
             let s = match clock::clock_style() {
                 ClockStyle::Analog => "Analog",
                 ClockStyle::Digital => "Digital",
+                ClockStyle::Palm => "Palm",
             };
             let w = s.len() as i16 * glyph_w;
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
@@ -438,13 +439,14 @@ fn render_wifi_marquee(
     let _ = display.flush();
 }
 
-/// Clock-face tile action: flip Analog ↔ Digital and persist immediately, then
-/// show a brief confirmation. Double-tapping the tile in the list is all it
-/// takes — no separate edit screen for a two-way switch.
+/// Clock-face tile action: cycle Analog → Digital → Palm and persist
+/// immediately, then show a brief confirmation. Double-tapping the tile in the
+/// list is all it takes — no separate edit screen for a three-way switch.
 async fn toggle_clock_face(display: &mut screen::Display) {
     let next = match clock::clock_style() {
         ClockStyle::Analog => ClockStyle::Digital,
-        ClockStyle::Digital => ClockStyle::Analog,
+        ClockStyle::Digital => ClockStyle::Palm,
+        ClockStyle::Palm => ClockStyle::Analog,
     };
     clock::persist_clock_style(next);
 
@@ -455,6 +457,7 @@ async fn toggle_clock_face(display: &mut screen::Display) {
     let (label, w) = match next {
         ClockStyle::Analog => ("Analog", 6 * 12),
         ClockStyle::Digital => ("Digital", 7 * 12),
+        ClockStyle::Palm => ("Palm", 4 * 12),
     };
     let x = (config::SCREEN_WIDTH as i16 - w) / 2;
     display.set_text_size(2);

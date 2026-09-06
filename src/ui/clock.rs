@@ -2,16 +2,17 @@
 //!
 //! The board has no RTC, so the clock ticks with **uptime** (`esp_hal::time::Instant`
 //! counts since boot), shifted to real wall-clock time once NTP sync is
-//! available (see [`crate::time`]). Two faces are available, chosen by the
-//! [`ClockStyle`] setting (Settings → "Clock Face"):
+//! available (see [`crate::time`]). Faces are chosen by the [`ClockStyle`]
+//! setting (Settings → "Clock Face"):
 //! - **Analog**: hands + ticks + hub, animating once a second (showcases the
 //!   `oled-i2c` shape API).
 //! - **Digital**: large `HH:MM` digits with the calendar date and a seconds
 //!   readout below.
+//! - **Palm**: a tropical coconut-palm scene (see [`crate::ui::face_palm`]).
 //!
 //! The style is a runtime value the settings screen can change; it persists to
 //! flash via [`crate::storage`] and is restored at boot ([`init_clock_style`]).
-//! A **single tap** on either face sleeps the display (returns [`Screen::Off`])
+//! A **single tap** on any face sleeps the display (returns [`Screen::Off`])
 //! and wakes back to the same face; a **triple-tap** jumps to settings.
 
 use core::fmt::Write as _;
@@ -25,6 +26,8 @@ use crate::drivers::screen::Display;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::{Prev, Screen};
 use crate::time;
+use crate::ui::face_palm;
+use crate::ui::geom;
 
 /// Which clock face the router shows as its interlude.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -33,6 +36,8 @@ pub enum ClockStyle {
     Analog,
     /// Large `HH:MM` digital digits with a seconds readout.
     Digital,
+    /// Tropical coconut-palm scene (see [`crate::ui::face_palm`]).
+    Palm,
 }
 
 /// Runtime clock-face selection, backed by flash and restored at boot.
@@ -40,34 +45,38 @@ static STYLE: AtomicU8 = AtomicU8::new(0);
 
 /// The currently selected clock face ([`ClockStyle::Analog`] by default).
 pub fn clock_style() -> ClockStyle {
-    if STYLE.load(Ordering::Acquire) == 1 {
-        ClockStyle::Digital
-    } else {
-        ClockStyle::Analog
+    match STYLE.load(Ordering::Acquire) {
+        1 => ClockStyle::Digital,
+        2 => ClockStyle::Palm,
+        _ => ClockStyle::Analog,
     }
 }
 
 /// Restore the persisted clock-face style at boot.
 pub fn init_clock_style() {
-    STYLE.store(crate::storage::load_clock_style().min(1), Ordering::Release);
+    STYLE.store(crate::storage::load_clock_style().min(2), Ordering::Release);
 }
 
 /// Set the clock-face style in memory only (applied live during editing);
 /// call [`persist_clock_style`] to store it permanently.
 pub fn set_clock_style(style: ClockStyle) {
-    STYLE.store(match style {
+    let v = match style {
         ClockStyle::Analog => 0,
         ClockStyle::Digital => 1,
-    }, Ordering::Release);
+        ClockStyle::Palm => 2,
+    };
+    STYLE.store(v, Ordering::Release);
 }
 
 /// Persist the current clock-face style to flash.
 pub fn persist_clock_style(style: ClockStyle) {
     set_clock_style(style);
-    crate::storage::save_clock_style(match style {
+    let v = match style {
         ClockStyle::Analog => 0,
         ClockStyle::Digital => 1,
-    });
+        ClockStyle::Palm => 2,
+    };
+    crate::storage::save_clock_style(v);
 }
 
 // ---------------------------------------------------------------------------
@@ -76,8 +85,8 @@ pub fn persist_clock_style(style: ClockStyle) {
 
 /// Current wall-clock time as `(hours, minutes, seconds)` (0..23, 0..59, 0..59).
 /// Prefers the NTP-synced time; falls back to raw uptime when never synced
-/// (the board has no RTC).
-fn now_hm() -> (u32, u32, u32) {
+/// (the board has no RTC). Shared with the palm face.
+pub(crate) fn now_hm() -> (u32, u32, u32) {
     match time::wall_clock() {
         Some((h, m, s)) => (h, m, s),
         None => {
@@ -95,37 +104,10 @@ fn now_hm() -> (u32, u32, u32) {
 // Analog face
 // ---------------------------------------------------------------------------
 
-/// Approximate `sin(deg)` as a fixed-point integer scaled by 1024, using the
-/// Bhaskara I rational approximation (error < 0.003 — irrelevant on a 1bpp
-/// 128x64 panel, and avoids pulling in a soft-float trig implementation).
-fn sin_fp(deg: i32) -> i32 {
-    let d = deg.rem_euclid(360);
-    let (neg, x) = if d >= 180 { (true, d - 180) } else { (false, d) };
-    let x_half = 180 - x;
-    let num = 4 * x * x_half;
-    let den = 40500 - x * x_half;
-    let v = 1024 * num / den;
-    if neg {
-        -v
-    } else {
-        v
-    }
-}
-
-/// `cos(deg)` via the same approximation (`cos(d) = sin(d + 90)`).
-fn cos_fp(deg: i32) -> i32 {
-    sin_fp(deg + 90)
-}
-
 /// Tip of a clock hand `len` pixels long, pointing `angle_deg` degrees
 /// clockwise from 12 o'clock.
 fn hand_tip(len: i16, angle_deg: i32) -> (i16, i16) {
-    let dx = (sin_fp(angle_deg) * len as i32) / 1024;
-    let dy = (-cos_fp(angle_deg) * len as i32) / 1024;
-    (
-        config::CLOCK.cx + dx as i16,
-        config::CLOCK.cy + dy as i16,
-    )
+    geom::ray(config::CLOCK.cx, config::CLOCK.cy, len, angle_deg)
 }
 
 /// Draw one hand from the hub to its tip.
@@ -180,8 +162,9 @@ async fn show_analog(display: &mut Display, ms: u32, tap: &'static TapChannel) -
 // Digital face
 // ---------------------------------------------------------------------------
 
-/// Format `(hours, minutes)` as `HH:MM` onto a small stack string.
-fn fmt_hm(h: u32, m: u32) -> heapless::String<5> {
+/// Format `(hours, minutes)` as `HH:MM` onto a small stack string. Shared with
+/// the palm face.
+pub(crate) fn fmt_hm(h: u32, m: u32) -> heapless::String<5> {
     let mut s = heapless::String::<5>::new();
     let _ = write!(&mut s, "{h:02}:{m:02}");
     s
@@ -221,8 +204,8 @@ async fn show_digital(display: &mut Display, ms: u32, tap: &'static TapChannel) 
     Screen::FacePlayer
 }
 
-/// Format a calendar date as `DD/MM/YYYY`.
-fn fmt_date(y: i32, mo: u32, d: u32) -> heapless::String<10> {
+/// Format a calendar date as `DD/MM/YYYY`. Shared with the palm face.
+pub(crate) fn fmt_date(y: i32, mo: u32, d: u32) -> heapless::String<10> {
     let mut s = heapless::String::<10>::new();
     let _ = write!(&mut s, "{d:02}/{mo:02}/{y:04}");
     s
@@ -270,5 +253,6 @@ pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel
     match clock_style() {
         ClockStyle::Analog => show_analog(display, ms, tap).await,
         ClockStyle::Digital => show_digital(display, ms, tap).await,
+        ClockStyle::Palm => face_palm::show_palm(display, ms, tap).await,
     }
 }

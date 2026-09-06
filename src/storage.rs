@@ -31,7 +31,7 @@ const SECTOR_SIZE: u32 = 4096;
 const STORAGE_LEN: usize = 12;
 /// Byte index of the brightness value within the sector.
 const BRIGHTNESS_BYTE: usize = 4;
-/// Byte index of the clock-face style (`0` = analog, `1` = digital).
+/// Byte index of the clock-face style (`0` = analog, `1` = digital, `2` = palm).
 const CLOCK_STYLE_BYTE: usize = 5;
 /// Byte index of the UTC offset (i32, little-endian) within the sector.
 const GMT_OFFSET_BYTE: usize = 6;
@@ -92,14 +92,15 @@ pub fn save_brightness(value: u8) {
     write_sector(value, gmt, style);
 }
 
-/// Load the stored clock-face style (`0` analog, `1` digital), falling back to
-/// the default if nothing valid is stored or the value is out of range.
+/// Load the stored clock-face style (`0` analog, `1` digital, `2` palm),
+/// falling back to the default if nothing valid is stored or the value is out
+/// of range.
 fn load_raw_clock_style() -> u8 {
     let Some(bytes) = read_sector() else {
         return config::CLOCK_DEFAULT_STYLE;
     };
     let v = bytes[CLOCK_STYLE_BYTE];
-    if v > 1 {
+    if v > 2 {
         config::CLOCK_DEFAULT_STYLE
     } else {
         v
@@ -119,7 +120,7 @@ pub fn save_clock_style(value: u8) {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(brightness, gmt, value.min(1));
+    write_sector(brightness, gmt, value.min(2));
 }
 
 /// Load the stored UTC offset in whole hours, falling back to the default if

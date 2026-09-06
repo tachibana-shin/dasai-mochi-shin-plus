@@ -31,12 +31,18 @@ pub async fn run_ui(display: Display, driver: SdDriver) -> ! {
 
     // ---- Boot intro from firmware memory (async so the sensor task stays
     // live even during boot) ----
-    println!("Dasai Mochi Shin — Rust edition");
-    QgifHeader::play_from_memory_async(&mut display, INTRO_QGIF, || false).await;
+    // TEMP(dev-test): while `config::DEV_SKIP_BOOT` is set we skip the intro +
+    // banner so the new clock face (see router) is visible straight away.
+    if !config::DEV_SKIP_BOOT {
+        println!("Dasai Mochi Shin — Rust edition");
+        QgifHeader::play_from_memory_async(&mut display, INTRO_QGIF, || false).await;
 
-    // ---- Boot banner (always shows, independent of the SD card) ----
-    println!("boot banner");
-    show_boot_banner(&mut display, &oled_i2c::FONT_5X7).await;
+        // ---- Boot banner (always shows, independent of the SD card) ----
+        println!("boot banner");
+        show_boot_banner(&mut display, &oled_i2c::FONT_5X7).await;
+    } else {
+        println!("[dev] boot intro/banner skipped (DEV_SKIP_BOOT)");
+    }
 
     // ---- Router: SD face playback (plus upcoming screens) ----
     println!("initialising SD card...");
