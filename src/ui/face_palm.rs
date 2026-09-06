@@ -1,8 +1,9 @@
 //! Tropical palm-tree clock face.
 //!
-//! A coconut palm on the left of the 128x64 panel: a slightly curved trunk, a
-//! fan of drooping fronds that **slowly sway**, a cluster of coconuts, a rising
-//! sun behind the crown and a band of sand at the bottom. The right side shows
+//! A coconut palm on the left of the 128x64 panel: a slightly curved, leaning
+//! trunk, a fan of drooping fronds that **slowly sway**, a cluster of coconuts,
+//! a rising sun, gulls, a second palm on the far shore, a band of sea with
+//! whitecaps and a beach at the bottom. The right side shows
 //! the wall-clock time (`HH:MM`), seconds and date — all derived from the
 //! NTP-synced clock (see [`crate::time`]). The scene redraws once a second and
 //! whenever the sway moves, so it stays cheap on the single-threaded executor.
@@ -23,10 +24,11 @@ use crate::time;
 use crate::ui::clock;
 use crate::ui::geom;
 
-/// Tree crown: frond origin / trunk tip.
-const CROWN: (i16, i16) = (22, 17);
-/// Trunk base, resting on the sand.
-const TRUNK_BASE: (i16, i16) = (26, 60);
+/// Tree crown: frond origin / trunk tip. Sits slightly right of the trunk base
+/// so the trunk leans toward the sea, like the postcard Hawaii palms.
+const CROWN: (i16, i16) = (28, 17);
+/// Trunk base, resting on the beach.
+const TRUNK_BASE: (i16, i16) = (24, 60);
 /// One frond angle (degrees clockwise from 12 o'clock) per palm leaf.
 /// Ten leaves: a near-even fan around the crown plus two slim hanging leaves
 /// (150°/210°) that droop down beside the trunk. That keeps the crown full
@@ -87,12 +89,16 @@ fn draw_palm(
     display.set_font(&FONT_5X7);
     display.set_text_color(true);
 
-    // Back to front: sun, fronds, coconuts, trunk, then foreground details.
+    // Back to front: sun, fronds, coconuts, trunk, distant palm, birds, then
+    // the sea and beach, and finally the foreground readout.
     draw_sun(display);
     draw_fronds(display, sway);
     draw_coconuts(display);
     draw_trunk(display);
-    draw_sand(display);
+    draw_distant_palm(display);
+    draw_birds(display);
+    draw_sea(display);
+    draw_beach(display);
     draw_readout(display, h, m, s, date);
 
     let _ = display.flush();
@@ -147,19 +153,21 @@ fn draw_fronds(display: &mut Display, sway: i32) {
 
 /// A small cluster of coconuts tucked under the crown.
 fn draw_coconuts(display: &mut Display) {
-    display.fill_circle(18, 16, 2, true);
-    display.fill_circle(23, 15, 2, true);
-    display.fill_circle(27, 17, 2, true);
+    display.fill_circle(24, 16, 2, true);
+    display.fill_circle(29, 15, 2, true);
+    display.fill_circle(33, 17, 2, true);
 }
 
-/// The trunk: a gently curving triple line (3 px thick) from sand to crown.
+/// The trunk: a gently arching triple line (3 px thick) from the beach up to
+/// the crown, leaning toward the sea.
 fn draw_trunk(display: &mut Display) {
     let segs = [
-        (TRUNK_BASE.0, TRUNK_BASE.1, 24, 50),
-        (24, 50, 23, 40),
-        (23, 40, 22, 30),
-        (22, 30, 21, 21),
-        (21, 21, CROWN.0, CROWN.1),
+        (TRUNK_BASE.0, TRUNK_BASE.1, 26, 52),
+        (26, 52, 27, 44),
+        (27, 44, 28, 36),
+        (28, 36, 28, 28),
+        (28, 28, 28, 20),
+        (28, 20, CROWN.0, CROWN.1),
     ];
     for &(x0, y0, x1, y1) in &segs {
         display.draw_line(x0, y0, x1, y1, true);
@@ -168,14 +176,49 @@ fn draw_trunk(display: &mut Display) {
     }
 }
 
-/// A band of sand across the bottom.
-fn draw_sand(display: &mut Display) {
-    let w = config::SCREEN_WIDTH as i16;
-    display.draw_line(0, 61, w - 1, 61, true);
-    // Sparser dashed second row for texture.
-    for (x0, x1) in [(0, 24), (44, 60), (76, 92), (106, w - 1)] {
-        display.draw_line(x0, 63, x1, 63, true);
+/// A smaller palm on the far shore, behind the sea band: a simple trunk plus a
+/// star of six short fronds. Drawn tiny so it reads as being further away.
+fn draw_distant_palm(display: &mut Display) {
+    let (cx, cy) = (47i16, 40i16);
+    display.draw_line(cx, cy, 48, 53, true);
+    for &a in &[10i32, 60, 120, 240, 300, 350] {
+        let (x, y) = geom::ray(cx, cy, 8, a);
+        display.draw_line(cx, cy, x, y, true);
     }
+}
+
+/// Two tiny gulls (3 px each) in the sky above the sea.
+fn draw_birds(display: &mut Display) {
+    for &(bx, by) in &[(35i16, 6i16), (46, 10)] {
+        display.draw_hline(bx, by, 1, true);
+        display.draw_hline(bx + 1, by + 1, 1, true);
+        display.draw_hline(bx + 2, by, 1, true);
+    }
+}
+
+/// The sea: a filled band to the right of the trunk (so the trunk never merges
+/// into it on the 1-bit panel), with short cleared dashes as whitecap foam.
+fn draw_sea(display: &mut Display) {
+    let w = config::SCREEN_WIDTH as i16;
+    let x0 = 30i16;
+    display.fill_rect(x0, 54, (w - x0) as u16, 5, true);
+    for (wx, wy, ww) in [
+        (36i16, 56, 2u16),
+        (48, 55, 3),
+        (62, 56, 2),
+        (76, 57, 2),
+        (90, 55, 3),
+        (104, 56, 2),
+        (118, 55, 2),
+    ] {
+        display.draw_hline(wx, wy, ww, false);
+    }
+}
+
+/// A band of beach at the bottom.
+fn draw_beach(display: &mut Display) {
+    let w = config::SCREEN_WIDTH as i16;
+    display.fill_rect(0, 60, w as u16, 4, true);
 }
 
 /// Centre `w`-wide content in the right-hand readout area.
