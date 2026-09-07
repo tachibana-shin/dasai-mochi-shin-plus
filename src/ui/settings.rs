@@ -198,7 +198,9 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
         }
         TileKind::ClockFace => {
             // "Analog" / "Digital" / "Palm" / "Lighthouse" / "Cat" / "Balloon"
-            // / "Beach" on the right.
+            // / "Beach" / "Windmill" / "Hourglass" / "Firefly" / "Aquarium"
+            // / "Waterfall" / "Forest" / "Torii" / "Island"
+            // on the right.
             let s = match clock::clock_style() {
                 ClockStyle::Analog => "Analog",
                 ClockStyle::Digital => "Digital",
@@ -207,6 +209,14 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
                 ClockStyle::Cat => "Cat",
                 ClockStyle::Balloon => "Balloon",
                 ClockStyle::Beach => "Beach",
+                ClockStyle::Windmill => "Windmill",
+                ClockStyle::Hourglass => "Hourglass",
+                ClockStyle::Firefly => "Firefly",
+                ClockStyle::Aquarium => "Aquarium",
+                ClockStyle::Waterfall => "Waterfall",
+                ClockStyle::Forest => "Forest",
+                ClockStyle::Torii => "Torii",
+                ClockStyle::IslandHouse => "Island",
             };
             let w = s.len() as i16 * glyph_w;
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
@@ -444,10 +454,12 @@ fn render_wifi_marquee(
     let _ = display.flush();
 }
 
-/// Clock-face tile action: cycle through all seven faces (Analog → Digital →
-/// Palm → Lighthouse → Cat → Balloon → Beach → Analog) and persist
-/// immediately, then show a brief confirmation. Double-tapping the tile in the
-/// list is all it takes — no separate edit screen for a multi-way switch.
+/// Clock-face tile action: cycle through all sixteen faces (Analog → Digital →
+/// Palm → Lighthouse → Cat → Balloon → Beach → Windmill → Hourglass → Firefly
+/// → Aquarium → Waterfall → Forest → Fuji → Torii → Island → Analog) and
+/// persist immediately, then show a brief
+/// confirmation. Double-tapping the tile in the list is all it takes — no
+/// separate edit screen for a multi-way switch.
 async fn toggle_clock_face(display: &mut screen::Display) {
     let next = match clock::clock_style() {
         ClockStyle::Analog => ClockStyle::Digital,
@@ -456,7 +468,15 @@ async fn toggle_clock_face(display: &mut screen::Display) {
         ClockStyle::Lighthouse => ClockStyle::Cat,
         ClockStyle::Cat => ClockStyle::Balloon,
         ClockStyle::Balloon => ClockStyle::Beach,
-        ClockStyle::Beach => ClockStyle::Analog,
+        ClockStyle::Beach => ClockStyle::Windmill,
+        ClockStyle::Windmill => ClockStyle::Hourglass,
+        ClockStyle::Hourglass => ClockStyle::Firefly,
+        ClockStyle::Firefly => ClockStyle::Aquarium,
+        ClockStyle::Aquarium => ClockStyle::Waterfall,
+        ClockStyle::Waterfall => ClockStyle::Forest,
+        ClockStyle::Forest => ClockStyle::Torii,
+        ClockStyle::Torii => ClockStyle::IslandHouse,
+        ClockStyle::IslandHouse => ClockStyle::Analog,
     };
     clock::persist_clock_style(next);
 
@@ -472,6 +492,14 @@ async fn toggle_clock_face(display: &mut screen::Display) {
         ClockStyle::Cat => ("Cat", 3 * 12),
         ClockStyle::Balloon => ("Balloon", 7 * 12),
         ClockStyle::Beach => ("Beach", 5 * 12),
+        ClockStyle::Windmill => ("Windmill", 8 * 12),
+        ClockStyle::Hourglass => ("Hourglass", 9 * 12),
+        ClockStyle::Firefly => ("Firefly", 7 * 12),
+        ClockStyle::Aquarium => ("Aquarium", 8 * 12),
+        ClockStyle::Waterfall => ("Waterfall", 9 * 12),
+        ClockStyle::Forest => ("Forest", 6 * 12),
+        ClockStyle::Torii => ("Torii", 5 * 12),
+        ClockStyle::IslandHouse => ("Island", 6 * 12),
     };
     let x = (config::SCREEN_WIDTH as i16 - w) / 2;
     display.set_text_size(2);

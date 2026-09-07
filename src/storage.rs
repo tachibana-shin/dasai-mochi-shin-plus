@@ -93,14 +93,16 @@ pub fn save_brightness(value: u8) {
 }
 
 /// Load the stored clock-face style (`0` analog, `1` digital, `2` palm, `3`
-/// lighthouse, `4` cat, `5` balloon, `6` beach), falling back to the default if
+/// lighthouse, `4` cat, `5` balloon, `6` beach, `7` windmill, `8` hourglass,
+/// `9` firefly, `10` aquarium, `11` waterfall, `12` forest, `13` fuji,
+/// `14` torii, `15` island), falling back to the default if
 /// nothing valid is stored or the value is out of range.
 fn load_raw_clock_style() -> u8 {
     let Some(bytes) = read_sector() else {
         return config::CLOCK_DEFAULT_STYLE;
     };
     let v = bytes[CLOCK_STYLE_BYTE];
-    if v > 6 {
+    if v > 15 {
         config::CLOCK_DEFAULT_STYLE
     } else {
         v
@@ -120,7 +122,7 @@ pub fn save_clock_style(value: u8) {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(brightness, gmt, value.min(6));
+    write_sector(brightness, gmt, value.min(14));
 }
 
 /// Load the stored UTC offset in whole hours, falling back to the default if

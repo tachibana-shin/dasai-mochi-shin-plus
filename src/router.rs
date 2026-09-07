@@ -92,7 +92,7 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
     // being iterated on is visible immediately at boot. Change the style to
     // whatever face is under design. Inactive when DEV_SKIP_BOOT is false.
     if config::DEV_SKIP_BOOT {
-        clock::set_clock_style(clock::ClockStyle::Palm);
+        clock::set_clock_style(clock::ClockStyle::IslandHouse);
         current = Screen::Clock;
     }
 

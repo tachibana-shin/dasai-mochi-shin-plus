@@ -34,11 +34,19 @@ use crate::drivers::screen::Display;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::{Prev, Screen};
 use crate::time;
+use crate::ui::face_aquarium;
 use crate::ui::face_balloon;
 use crate::ui::face_beach;
 use crate::ui::face_cat;
+use crate::ui::face_firefly;
+use crate::ui::face_forest;
+use crate::ui::face_hourglass;
+use crate::ui::face_island;
 use crate::ui::face_lighthouse;
 use crate::ui::face_palm;
+use crate::ui::face_torii;
+use crate::ui::face_windmill;
+use crate::ui::face_waterfall;
 use crate::ui::geom;
 
 /// Which clock face the router shows as its interlude.
@@ -61,6 +69,30 @@ pub enum ClockStyle {
     Balloon,
     /// Beach whose sky tells day/night (see [`crate::ui::face_beach`]).
     Beach,
+    /// Windmill whose rotor turns with the minutes, the longest blade the
+    /// minute hand (see [`crate::ui::face_windmill`]).
+    Windmill,
+    /// Hourglass whose sand drains across the hour
+    /// (see [`crate::ui::face_hourglass`]).
+    Hourglass,
+    /// Jar whose glowing fireflies count the 12-hour cycle
+    /// (see [`crate::ui::face_firefly`]).
+    Firefly,
+    /// Fish tank whose goldfish's trip across the tank tells the minute
+    /// (see [`crate::ui::face_aquarium`]).
+    Aquarium,
+    /// Waterfall whose plunge pool fills through the hour
+    /// (see [`crate::ui::face_waterfall`]).
+    Waterfall,
+    /// Pine forest with a squirrel climbing the minute tree
+    /// (see [`crate::ui::face_forest`]).
+    Forest,
+    /// Red torii gate in the rising tide of the minutes
+    /// (see [`crate::ui::face_torii`]).
+    Torii,
+    /// Lakeside house on an island whose boat circles by the minute
+    /// (see [`crate::ui::face_island`]).
+    IslandHouse,
 }
 
 /// Runtime clock-face selection, backed by flash and restored at boot.
@@ -75,13 +107,21 @@ pub fn clock_style() -> ClockStyle {
         4 => ClockStyle::Cat,
         5 => ClockStyle::Balloon,
         6 => ClockStyle::Beach,
+        7 => ClockStyle::Windmill,
+        8 => ClockStyle::Hourglass,
+        9 => ClockStyle::Firefly,
+        10 => ClockStyle::Aquarium,
+        11 => ClockStyle::Waterfall,
+        12 => ClockStyle::Forest,
+        13 => ClockStyle::Torii,
+        14 => ClockStyle::IslandHouse,
         _ => ClockStyle::Analog,
     }
 }
 
 /// Restore the persisted clock-face style at boot.
 pub fn init_clock_style() {
-    STYLE.store(crate::storage::load_clock_style().min(6), Ordering::Release);
+    STYLE.store(crate::storage::load_clock_style().min(14), Ordering::Release);
 }
 
 /// Set the clock-face style in memory only (applied live during editing);
@@ -95,6 +135,14 @@ pub fn set_clock_style(style: ClockStyle) {
         ClockStyle::Cat => 4,
         ClockStyle::Balloon => 5,
         ClockStyle::Beach => 6,
+        ClockStyle::Windmill => 7,
+        ClockStyle::Hourglass => 8,
+        ClockStyle::Firefly => 9,
+        ClockStyle::Aquarium => 10,
+        ClockStyle::Waterfall => 11,
+        ClockStyle::Forest => 12,
+        ClockStyle::Torii => 13,
+        ClockStyle::IslandHouse => 14,
     };
     STYLE.store(v, Ordering::Release);
 }
@@ -110,6 +158,14 @@ pub fn persist_clock_style(style: ClockStyle) {
         ClockStyle::Cat => 4,
         ClockStyle::Balloon => 5,
         ClockStyle::Beach => 6,
+        ClockStyle::Windmill => 7,
+        ClockStyle::Hourglass => 8,
+        ClockStyle::Firefly => 9,
+        ClockStyle::Aquarium => 10,
+        ClockStyle::Waterfall => 11,
+        ClockStyle::Forest => 12,
+        ClockStyle::Torii => 13,
+        ClockStyle::IslandHouse => 14,
     };
     crate::storage::save_clock_style(v);
 }
@@ -330,5 +386,13 @@ pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel
         ClockStyle::Cat => face_cat::show_cat(display, ms, tap).await,
         ClockStyle::Balloon => face_balloon::show_balloon(display, ms, tap).await,
         ClockStyle::Beach => face_beach::show_beach(display, ms, tap).await,
+        ClockStyle::Windmill => face_windmill::show_windmill(display, ms, tap).await,
+        ClockStyle::Hourglass => face_hourglass::show_hourglass(display, ms, tap).await,
+        ClockStyle::Firefly => face_firefly::show_firefly(display, ms, tap).await,
+        ClockStyle::Aquarium => face_aquarium::show_aquarium(display, ms, tap).await,
+        ClockStyle::Waterfall => face_waterfall::show_waterfall(display, ms, tap).await,
+        ClockStyle::Forest => face_forest::show_forest(display, ms, tap).await,
+        ClockStyle::Torii => face_torii::show_torii(display, ms, tap).await,
+        ClockStyle::IslandHouse => face_island::show_island(display, ms, tap).await,
     }
 }
