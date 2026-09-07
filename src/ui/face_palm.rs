@@ -10,8 +10,6 @@
 //! Gestures behave like the other clock faces: **single tap** sleeps the
 //! display ([`Screen::Off`]), **triple-tap** opens settings.
 
-use core::fmt::Write as _;
-
 use esp_hal::time::Instant as EspInstant;
 use oled_i2c::FONT_5X7;
 
@@ -100,7 +98,7 @@ fn draw_palm(
     draw_trunk(display);
     draw_coconuts(display);
     draw_sand(display);
-    draw_readout(display, h, m, s, date);
+    clock::draw_readout(display, h, m, s, date);
 
     let _ = display.flush();
 }
@@ -184,39 +182,4 @@ fn draw_sand(display: &mut Display) {
     for (x0, x1) in [(0, 24), (44, 60), (76, 92), (106, w - 1)] {
         display.draw_line(x0, 63, x1, 63, true);
     }
-}
-
-/// Centre `w`-wide content in the right-hand readout area.
-fn readout_x(w: i16) -> i16 {
-    (96 - w / 2).max(58)
-}
-
-/// Draw the time (`HH:MM` large), seconds and date on the right.
-fn draw_readout(
-    display: &mut Display,
-    h: u32,
-    m: u32,
-    s: u32,
-    date: Option<(i32, u32, u32)>,
-) {
-    // Large HH:MM at 2x scale.
-    let hm = clock::fmt_hm(h, m);
-    let hm_w = hm.len() as i16 * 12;
-    display.set_text_size(2);
-    display.draw_str_with(readout_x(hm_w), 14, &hm, &FONT_5X7);
-
-    // Seconds at 1x scale, just under the time.
-    let mut secs = heapless::String::<2>::new();
-    let _ = write!(&mut secs, "{s:02}");
-    let secs_w = secs.len() as i16 * 6;
-    display.set_text_size(1);
-    display.draw_str_with(readout_x(secs_w), 36, &secs, &FONT_5X7);
-
-    // Date DD/MM/YYYY (or a placeholder until the board syncs).
-    let ds: heapless::String<10> = match date {
-        Some((y, mo, d)) => clock::fmt_date(y, mo, d),
-        None => "--/--/----".try_into().unwrap(),
-    };
-    let ds_w = ds.len() as i16 * 6;
-    display.draw_str_with(readout_x(ds_w), 47, &ds, &FONT_5X7);
 }

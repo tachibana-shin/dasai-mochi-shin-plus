@@ -9,6 +9,14 @@
 //! - **Digital**: large `HH:MM` digits with the calendar date and a seconds
 //!   readout below.
 //! - **Palm**: a tropical coconut-palm scene (see [`crate::ui::face_palm`]).
+//! - **Lighthouse**: a beam that sweeps with the minutes
+//!   (see [`crate::ui::face_lighthouse`]).
+//! - **Cat**: a cat whose eyes are miniature hour/minute dials
+//!   (see [`crate::ui::face_cat`]).
+//! - **Balloon**: a hot-air balloon whose altitude follows the hour
+//!   (see [`crate::ui::face_balloon`]).
+//! - **Beach**: a beach whose sky tells day from night
+//!   (see [`crate::ui::face_beach`]).
 //!
 //! The style is a runtime value the settings screen can change; it persists to
 //! flash via [`crate::storage`] and is restored at boot ([`init_clock_style`]).
@@ -26,6 +34,10 @@ use crate::drivers::screen::Display;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::{Prev, Screen};
 use crate::time;
+use crate::ui::face_balloon;
+use crate::ui::face_beach;
+use crate::ui::face_cat;
+use crate::ui::face_lighthouse;
 use crate::ui::face_palm;
 use crate::ui::geom;
 
@@ -38,6 +50,17 @@ pub enum ClockStyle {
     Digital,
     /// Tropical coconut-palm scene (see [`crate::ui::face_palm`]).
     Palm,
+    /// Lighthouse whose beam sweeps with the minutes
+    /// (see [`crate::ui::face_lighthouse`]).
+    Lighthouse,
+    /// Cat whose eyes are miniature hour/minute dials
+    /// (see [`crate::ui::face_cat`]).
+    Cat,
+    /// Hot-air balloon whose altitude follows the hour
+    /// (see [`crate::ui::face_balloon`]).
+    Balloon,
+    /// Beach whose sky tells day/night (see [`crate::ui::face_beach`]).
+    Beach,
 }
 
 /// Runtime clock-face selection, backed by flash and restored at boot.
@@ -48,13 +71,17 @@ pub fn clock_style() -> ClockStyle {
     match STYLE.load(Ordering::Acquire) {
         1 => ClockStyle::Digital,
         2 => ClockStyle::Palm,
+        3 => ClockStyle::Lighthouse,
+        4 => ClockStyle::Cat,
+        5 => ClockStyle::Balloon,
+        6 => ClockStyle::Beach,
         _ => ClockStyle::Analog,
     }
 }
 
 /// Restore the persisted clock-face style at boot.
 pub fn init_clock_style() {
-    STYLE.store(crate::storage::load_clock_style().min(2), Ordering::Release);
+    STYLE.store(crate::storage::load_clock_style().min(6), Ordering::Release);
 }
 
 /// Set the clock-face style in memory only (applied live during editing);
@@ -64,6 +91,10 @@ pub fn set_clock_style(style: ClockStyle) {
         ClockStyle::Analog => 0,
         ClockStyle::Digital => 1,
         ClockStyle::Palm => 2,
+        ClockStyle::Lighthouse => 3,
+        ClockStyle::Cat => 4,
+        ClockStyle::Balloon => 5,
+        ClockStyle::Beach => 6,
     };
     STYLE.store(v, Ordering::Release);
 }
@@ -75,6 +106,10 @@ pub fn persist_clock_style(style: ClockStyle) {
         ClockStyle::Analog => 0,
         ClockStyle::Digital => 1,
         ClockStyle::Palm => 2,
+        ClockStyle::Lighthouse => 3,
+        ClockStyle::Cat => 4,
+        ClockStyle::Balloon => 5,
+        ClockStyle::Beach => 6,
     };
     crate::storage::save_clock_style(v);
 }
@@ -85,7 +120,7 @@ pub fn persist_clock_style(style: ClockStyle) {
 
 /// Current wall-clock time as `(hours, minutes, seconds)` (0..23, 0..59, 0..59).
 /// Prefers the NTP-synced time; falls back to raw uptime when never synced
-/// (the board has no RTC). Shared with the palm face.
+/// (the board has no RTC). Shared with the scene faces.
 pub(crate) fn now_hm() -> (u32, u32, u32) {
     match time::wall_clock() {
         Some((h, m, s)) => (h, m, s),
@@ -98,6 +133,43 @@ pub(crate) fn now_hm() -> (u32, u32, u32) {
             )
         }
     }
+}
+
+/// Centre `w`-wide content in the right-hand readout area used by every scene
+/// face (the left 58 px hold the scene).
+fn readout_x(w: i16) -> i16 {
+    (96 - w / 2).max(58)
+}
+
+/// Draw the time (`HH:MM` large), seconds and date on the right of the panel.
+/// Shared by the scene faces (Palm, Lighthouse, Cat, Balloon, Beach).
+pub(crate) fn draw_readout(
+    display: &mut Display,
+    h: u32,
+    m: u32,
+    s: u32,
+    date: Option<(i32, u32, u32)>,
+) {
+    // Large HH:MM at 2x scale.
+    let hm = fmt_hm(h, m);
+    let hm_w = hm.len() as i16 * 12;
+    display.set_text_size(2);
+    display.draw_str_with(readout_x(hm_w), 14, &hm, &FONT_5X7);
+
+    // Seconds at 1x scale, just under the time.
+    let mut secs = heapless::String::<2>::new();
+    let _ = write!(&mut secs, "{s:02}");
+    let secs_w = secs.len() as i16 * 6;
+    display.set_text_size(1);
+    display.draw_str_with(readout_x(secs_w), 36, &secs, &FONT_5X7);
+
+    // Date DD/MM/YYYY (or a placeholder until the board syncs).
+    let ds: heapless::String<10> = match date {
+        Some((y, mo, d)) => fmt_date(y, mo, d),
+        None => "--/--/----".try_into().unwrap(),
+    };
+    let ds_w = ds.len() as i16 * 6;
+    display.draw_str_with(readout_x(ds_w), 47, &ds, &FONT_5X7);
 }
 
 // ---------------------------------------------------------------------------
@@ -254,5 +326,9 @@ pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel
         ClockStyle::Analog => show_analog(display, ms, tap).await,
         ClockStyle::Digital => show_digital(display, ms, tap).await,
         ClockStyle::Palm => face_palm::show_palm(display, ms, tap).await,
+        ClockStyle::Lighthouse => face_lighthouse::show_lighthouse(display, ms, tap).await,
+        ClockStyle::Cat => face_cat::show_cat(display, ms, tap).await,
+        ClockStyle::Balloon => face_balloon::show_balloon(display, ms, tap).await,
+        ClockStyle::Beach => face_beach::show_beach(display, ms, tap).await,
     }
 }

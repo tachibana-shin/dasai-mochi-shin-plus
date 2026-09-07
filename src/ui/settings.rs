@@ -197,11 +197,16 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, shown, &FONT_5X7);
         }
         TileKind::ClockFace => {
-            // "Analog" / "Digital" / "Palm" on the right.
+            // "Analog" / "Digital" / "Palm" / "Lighthouse" / "Cat" / "Balloon"
+            // / "Beach" on the right.
             let s = match clock::clock_style() {
                 ClockStyle::Analog => "Analog",
                 ClockStyle::Digital => "Digital",
                 ClockStyle::Palm => "Palm",
+                ClockStyle::Lighthouse => "Lighthouse",
+                ClockStyle::Cat => "Cat",
+                ClockStyle::Balloon => "Balloon",
+                ClockStyle::Beach => "Beach",
             };
             let w = s.len() as i16 * glyph_w;
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
@@ -439,14 +444,19 @@ fn render_wifi_marquee(
     let _ = display.flush();
 }
 
-/// Clock-face tile action: cycle Analog → Digital → Palm and persist
+/// Clock-face tile action: cycle through all seven faces (Analog → Digital →
+/// Palm → Lighthouse → Cat → Balloon → Beach → Analog) and persist
 /// immediately, then show a brief confirmation. Double-tapping the tile in the
-/// list is all it takes — no separate edit screen for a three-way switch.
+/// list is all it takes — no separate edit screen for a multi-way switch.
 async fn toggle_clock_face(display: &mut screen::Display) {
     let next = match clock::clock_style() {
         ClockStyle::Analog => ClockStyle::Digital,
         ClockStyle::Digital => ClockStyle::Palm,
-        ClockStyle::Palm => ClockStyle::Analog,
+        ClockStyle::Palm => ClockStyle::Lighthouse,
+        ClockStyle::Lighthouse => ClockStyle::Cat,
+        ClockStyle::Cat => ClockStyle::Balloon,
+        ClockStyle::Balloon => ClockStyle::Beach,
+        ClockStyle::Beach => ClockStyle::Analog,
     };
     clock::persist_clock_style(next);
 
@@ -458,6 +468,10 @@ async fn toggle_clock_face(display: &mut screen::Display) {
         ClockStyle::Analog => ("Analog", 6 * 12),
         ClockStyle::Digital => ("Digital", 7 * 12),
         ClockStyle::Palm => ("Palm", 4 * 12),
+        ClockStyle::Lighthouse => ("Lighthouse", 10 * 12),
+        ClockStyle::Cat => ("Cat", 3 * 12),
+        ClockStyle::Balloon => ("Balloon", 7 * 12),
+        ClockStyle::Beach => ("Beach", 5 * 12),
     };
     let x = (config::SCREEN_WIDTH as i16 - w) / 2;
     display.set_text_size(2);
