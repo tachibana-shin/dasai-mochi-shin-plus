@@ -87,10 +87,10 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
         Screen::Settings
     };
 
-    // TEMP(dev-test): while `config::DEV_SKIP_BOOT` is true we force the palm
-    // face and start on it (no face player / intro) so the new clock face is
-    // visible immediately at boot. To revert, delete the `if` branch below and
-    // set DEV_SKIP_BOOT back to false.
+    // TEMP(dev-test): while `config::DEV_SKIP_BOOT` is true we force the
+    // selected clock face and start on it (no face player / intro) so the face
+    // being iterated on is visible immediately at boot. Change the style to
+    // whatever face is under design. Inactive when DEV_SKIP_BOOT is false.
     if config::DEV_SKIP_BOOT {
         clock::set_clock_style(clock::ClockStyle::Palm);
         current = Screen::Clock;
@@ -106,8 +106,8 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
             // An analog clock interlude between faces.
             Screen::Clock => {
                 // TEMP(dev-test): while DEV_SKIP_BOOT is set the clock runs
-                // forever (~49 days) so the palm face stays on screen while we
-                // iterate on it. Revert with DEV_SKIP_BOOT.
+                // forever (~49 days) so the face stays on screen while we
+                // iterate on it. Inactive when DEV_SKIP_BOOT is false.
                 let dur = if config::DEV_SKIP_BOOT {
                     u32::MAX
                 } else {

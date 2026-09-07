@@ -31,8 +31,8 @@ pub async fn run_ui(display: Display, driver: SdDriver) -> ! {
 
     // ---- Boot intro from firmware memory (async so the sensor task stays
     // live even during boot) ----
-    // TEMP(dev-test): while `config::DEV_SKIP_BOOT` is set we skip the intro +
-    // banner so the new clock face (see router) is visible straight away.
+    // DEV(dev-test): skipping the intro + banner lets a face being iterated on
+    // (see the DEV_SKIP_BOOT blocks in the router) appear right at boot.
     if !config::DEV_SKIP_BOOT {
         println!("Dasai Mochi Shin — Rust edition");
         QgifHeader::play_from_memory_async(&mut display, INTRO_QGIF, || false).await;

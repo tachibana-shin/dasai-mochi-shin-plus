@@ -174,11 +174,12 @@ pub struct Boot {
 
 pub const BOOT: Boot = Boot { banner_ms: 3000 };
 
-/// TEMP(dev-test): skip the boot intro + banner and go straight to the router
-/// (which currently starts on the palm face) so the new clock face is visible
-/// immediately. Set back to `false` to restore the normal boot sequence once
-/// the face is finalised.
-pub const DEV_SKIP_BOOT: bool = true;
+/// Dev-test toggle: while designing a new clock face we want to see it
+/// immediately at boot, so with this set to `true` the boot intro + banner are
+/// skipped and the router force-starts on the clock face (running forever —
+/// see the TEMP/dev-test blocks in `router.rs`). Keep `false` for normal boots;
+/// flick it back on whenever a new face needs on-device iteration.
+pub const DEV_SKIP_BOOT: bool = false;
 
 // ---------------------------------------------------------------------------
 // `.qgif` face format (array sizes are compile-time)
