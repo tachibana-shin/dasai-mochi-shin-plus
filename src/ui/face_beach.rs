@@ -2,10 +2,12 @@
 //!
 //! A beach with a calm sea on the left of the 128x64 panel, telling the time
 //! through the sky itself: by day the **sun climbs an arc from the left
-//! horizon at dawn to the right at sunset**, with seagulls and a tiny sailboat
-//! on the water; after 6 pm (and before 6 am) the sun gives way to a **crescent
-//! moon, twinkling stars and a moon-lit reflection** on the sea. The right side
-//! shows the wall-clock time (`HH:MM`), seconds and date.
+//! horizon at dawn to the right at sunset**, ringed with rays, with seagulls
+//! and a tiny sailboat on the water; after 6 pm (and before 6 am) the sun gives
+//! way to a **crescent moon, twinkling stars and a moon-lit reflection** that
+//! widens as it nears the shore. A sandy beach with a scalloped surf foam line
+//! borders the whole bottom of the panel. The right side shows the wall-clock
+//! time (`HH:MM`), seconds and date.
 //!
 //! Gestures behave like every other clock face: **single tap** sleeps the
 //! display ([`Screen::Off`]), **triple-tap** opens settings.
@@ -64,61 +66,97 @@ fn draw_beach(
     display.set_text_color(true);
 
     // Sea horizon and wave dashes.
-    display.draw_line(0, 40, 57, 40, true);
+    display.draw_line(0, 42, 57, 42, true);
     for &(y, a, b) in &[
-        (43, 0, 20),
-        (43, 26, 50),
-        (47, 6, 34),
-        (47, 40, 57),
-        (51, 0, 16),
-        (51, 20, 44),
-        (55, 12, 38),
-        (59, 0, 57),
+        (44, 2, 12),
+        (44, 20, 30),
+        (46, 8, 18),
+        (46, 32, 44),
+        (48, 0, 10),
+        (48, 24, 36),
+        (50, 6, 16),
+        (50, 40, 50),
+        (52, 14, 26),
+        (52, 50, 57),
+        (54, 4, 18),
+        (54, 30, 42),
     ] {
         display.draw_line(a, y, b, y, true);
     }
 
     let night = h >= 18 || h < 6;
     if night {
-        // Crescent moon (a disc with a bite taken out of its upper edge).
-        display.fill_circle(18, 15, 4, true);
-        display.fill_circle(21, 13, 3, false);
-        // Twinkling stars: two of the four are visible each second.
-        let stars = [(30i16, 7i16), (41, 11), (49, 6), (54, 15)];
+        // Crescent moon with a bite out of its upper edge.
+        display.fill_circle(16, 14, 5, true);
+        display.fill_circle(20, 12, 4, false);
+        // Twinkling stars: half of the six are visible each second.
+        let stars = [(30i16, 8i16), (41, 5), (49, 10), (55, 17), (33, 18), (24, 20)];
         for (i, &(sx, sy)) in stars.iter().enumerate() {
             if (s + i as u32) % 2 == 0 {
-                display.fill_rect(sx, sy, 1, 1, true);
+                display.fill_rect(sx - 1, sy, 3, 1, true);
+                display.fill_rect(sx, sy - 1, 1, 3, true);
             }
         }
-        // A dashed moon reflection on the water under the moon.
-        let mut yy = 43;
-        while yy <= 60 {
-            display.fill_rect(18, yy, 1, 1, true);
-            yy += 2;
-        }
-    } else {
+        // Moon-lit reflection on the water, widening toward the shore (drawn
+        // before the boat so the boat sails in front of it).
+        display.fill_rect(16, 44, 1, 1, true);
+        display.fill_rect(15, 48, 3, 1, true);
+        display.fill_rect(14, 52, 5, 1, true);
+        display.fill_rect(13, 56, 7, 1, true);
+    }
+
+    // A tiny sailboat on the sea: main sail, jib and pointed hull.
+    display.fill_triangle(19, 44, 19, 49, 26, 49, true);
+    display.fill_triangle(19, 44, 19, 49, 14, 49, true);
+    display.fill_triangle(11, 49, 28, 49, 19, 53, true);
+
+    // Sandy shore with a scalloped foam line where the surf breaks, stretching
+    // across the whole bottom of the panel.
+    display.fill_rect(0, 57, 128, 7, true);
+    for s in (0i16..=112).step_by(16) {
+        display.draw_line(s, 55, s + 9, 55, true);
+        display.draw_line(s + 10, 56, s + 16, 56, true);
+    }
+    // A few pebbles (erased dots) spread across the sand.
+    for &(x, y) in &[
+        (10i16, 59),
+        (24, 58),
+        (45, 59),
+        (64, 60),
+        (82, 59),
+        (100, 61),
+        (116, 58),
+    ] {
+        display.fill_rect(x, y, 1, 1, false);
+    }
+
+    if !night {
         // The sun: rises on the left at 6 am, peaks at noon, sets right at 6 pm.
         let th = (h as i32 - 6) * 15;
         let sx = 12 + ((1024 - geom::cos_fp(th)) * 21) / 1024;
         let sy = 36 - (geom::sin_fp(th) * 18) / 1024;
         display.fill_circle(sx as i16, sy as i16, 6, true);
-        // Sparks on the water when the sun sits low over the horizon.
-        if sy > 22 {
-            display.fill_rect(sx as i16, 45, 1, 1, true);
-            display.fill_rect(sx as i16 - 2, 49, 1, 1, true);
-            display.fill_rect(sx as i16 + 2, 53, 1, 1, true);
+        // Rays around the sun; rays pointing onto the sea are skipped so a low
+        // sun only glows upward.
+        for &d in &[0i32, 45, 90, 135, 180, 225, 270, 315] {
+            let ex = sx + (geom::cos_fp(d) * 10) / 1024;
+            let ey = sy - (geom::sin_fp(d) * 10) / 1024;
+            if ey <= 44 {
+                display.draw_line(sx as i16, sy as i16, ex as i16, ey as i16, true);
+            }
+        }
+        // Sparkles on the water when the sun hangs low over the horizon.
+        if sy > 30 {
+            display.fill_rect(sx as i16 - 1, 46, 2, 1, true);
+            display.fill_rect(sx as i16 - 2, 50, 2, 1, true);
+            display.fill_rect(sx as i16 - 1, 54, 2, 1, true);
         }
         // Two seagulls.
-        display.draw_line(5, 20, 8, 17, true);
-        display.draw_line(8, 17, 11, 20, true);
-        display.draw_line(16, 12, 18, 10, true);
-        display.draw_line(18, 10, 20, 12, true);
+        display.draw_line(4, 19, 8, 15, true);
+        display.draw_line(8, 15, 12, 19, true);
+        display.draw_line(42, 9, 46, 5, true);
+        display.draw_line(46, 5, 50, 9, true);
     }
-
-    // A tiny sailboat on the horizon.
-    display.fill_triangle(48, 41, 52, 41, 50, 39, true);
-    display.draw_line(50, 39, 46, 43, true);
-    display.draw_line(50, 39, 54, 43, true);
 
     clock::draw_readout(display, h, m, s, date);
     let _ = display.flush();

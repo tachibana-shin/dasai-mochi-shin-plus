@@ -1,10 +1,12 @@
 //! Lighthouse clock face.
 //!
-//! A striped lighthouse on a rocky outcrop, with a sweep of sea and sky on the
-//! left of the 128x64 panel. The light **beam sweeps with the minutes** — one
-//! full turn an hour, like a minute hand hidden in the scene — and the lamp
-//! blinks every other second. The right side shows the wall-clock time
-//! (`HH:MM`), seconds and date, exactly like the other scene faces.
+//! A striped lighthouse on a rocky islet, with a sweep of sea and sky on the
+//! left of the 128x64 panel. The light is a **long, smooth beam that swings
+//! across the open sea with the minutes** — and the lamp blinks every other
+//! second. The water band below the islet stretches the full width of the
+//! panel and **moves every so often**, like a wave rolling through. The right
+//! side shows the wall-clock time (`HH:MM`), seconds and date, exactly like
+//! the other scene faces.
 //!
 //! Gestures behave like every other clock face: **single tap** sleeps the
 //! display ([`Screen::Off`]), **triple-tap** opens settings.
@@ -65,25 +67,47 @@ fn draw_lighthouse(
     display.set_font(&FONT_5X7);
     display.set_text_color(true);
 
-    // Sea horizon and wave dashes.
+    // Sea: horizon and wave dashes. The waves skip the rows that line up with
+    // the shared readout (49/52) and start lower, leaving a clear gap below
+    // the date; the band under the islet runs the full width of the panel.
+    // The pattern shifts for a moment every eight seconds, like a wave
+    // rolling through.
     display.draw_line(0, 46, 57, 46, true);
+    let roll = (s as i16 / 2) % 4 == 3;
+    let drift: i16 = if roll { 3 } else { 0 };
     for &(y, a, b) in &[
-        (49, 0, 18),
-        (49, 22, 38),
-        (49, 42, 57),
-        (52, 4, 28),
-        (52, 34, 57),
-        (55, 0, 14),
-        (55, 18, 40),
-        (58, 10, 34),
-        (61, 0, 57),
+        (55, 37, 57),
+        (57, 62, 80),
+        (57, 98, 114),
+        (58, 40, 57),
+        (58, 66, 84),
+        (58, 104, 124),
+        (59, 4, 18),
+        (59, 30, 44),
+        (59, 60, 76),
+        (59, 90, 106),
+        (59, 118, 126),
+        (61, 12, 28),
+        (61, 48, 62),
+        (61, 78, 94),
+        (61, 110, 124),
+        (63, 6, 22),
+        (63, 34, 50),
+        (63, 70, 84),
+        (63, 100, 116),
     ] {
-        display.draw_line(a, y, b, y, true);
+        display.draw_line(a + drift, y, (b + drift).min(127), y, true);
+    }
+    if roll {
+        // A crest sweeping through the water band below the islet.
+        display.draw_line(70, 60, 92, 60, true);
     }
 
-    // Rocky outcrop the tower stands on.
-    display.fill_triangle(0, 46, 36, 46, 44, 63, true);
-    display.fill_triangle(0, 46, 44, 63, 0, 63, true);
+    // The islet the tower stands on: a rock mound peaking under the tower,
+    // with a cliff edge falling away to the sea on the right.
+    display.fill_triangle(0, 46, 22, 43, 30, 50, true);
+    display.fill_triangle(0, 46, 30, 50, 40, 58, true);
+    display.fill_triangle(0, 46, 40, 58, 0, 58, true);
 
     // Striped tower: eight alternating bands, tapering from 12 to 5 px wide.
     for k in 0..8 {
@@ -100,12 +124,14 @@ fn draw_lighthouse(
         display.fill_circle(LAMP.0, LAMP.1, 5, true);
     }
 
-    // The sweeping light: a narrow beam from the lamp rotating with the minutes
-    // (6°/min → a full turn per hour), like a minute hand hidden in the scene.
-    let a = (m * 6) as i32;
-    let (bx0, by0) = geom::ray(LAMP.0, LAMP.1, 36, a - 6);
-    let (bx1, by1) = geom::ray(LAMP.0, LAMP.1, 36, a + 6);
-    display.fill_triangle(LAMP.0, LAMP.1, bx0, by0, bx1, by1, true);
+    // The beam: a long, smooth wedge of light that swings across the sea with
+    // the minutes. It goes from nearly horizontal at ~:45 to a gentle downward
+    // sweep at ~:15 — always over the open water on the right, never touching
+    // the tower, the islet, or the top edge of the panel.
+    let a = 120 + (geom::sin_fp(m as i32 * 6) * 20) / 1024; // 100°..140°
+    let (b0x, b0y) = geom::ray(LAMP.0, LAMP.1, 42, a - 5);
+    let (b1x, b1y) = geom::ray(LAMP.0, LAMP.1, 42, a + 5);
+    display.fill_triangle(LAMP.0, LAMP.1, b0x, b0y, b1x, b1y, true);
 
     clock::draw_readout(display, h, m, s, date);
     let _ = display.flush();
