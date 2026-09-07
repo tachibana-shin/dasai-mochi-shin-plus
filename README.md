@@ -58,6 +58,19 @@ There is the [wokwi simulator](https://wokwi.com/) and in the wokwi_board folder
   * Create a new [project on wokwi](https://wokwi.com/projects/new/rust-nostd-esp32-c3)
   * Click inside the code editor, press "F1" and choose "Load custom board file..."
 
+## Offline face preview
+
+Rendering the 13 scene clock faces without the board:
+
+```bash
+python3 tools/faces_mirror.py
+```
+
+`tools/faces_mirror.py` mirrors the exact integer math of `src/clock_faces/*.rs`
+(`geom::ray`, Bhaskara `sin_fp`/`cos_fp` ×1024, Rust truncating division) and
+prints each face as a 128x64 ASCII frame, so you can eyeball layout, clipping
+and animation snapshots before flashing.
+
 ## More compehersive 'Getting Started' (if you do not even have rust installed)
 
 ### Step 1: Install Rust Using Rustup
