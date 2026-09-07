@@ -10,6 +10,7 @@
 #![no_main]
 
 mod app;
+mod clock_faces;
 mod config;
 mod drivers;
 mod qgif;

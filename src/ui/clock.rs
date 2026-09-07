@@ -8,15 +8,19 @@
 //!   `oled-i2c` shape API).
 //! - **Digital**: large `HH:MM` digits with the calendar date and a seconds
 //!   readout below.
-//! - **Palm**: a tropical coconut-palm scene (see [`crate::ui::face_palm`]).
+//! - **Palm**: a tropical coconut-palm scene (see [`crate::clock_faces::Palm`]).
 //! - **Lighthouse**: a beam that sweeps with the minutes
-//!   (see [`crate::ui::face_lighthouse`]).
+//!   (see [`crate::clock_faces::Lighthouse`]).
 //! - **Cat**: a cat whose eyes are miniature hour/minute dials
-//!   (see [`crate::ui::face_cat`]).
+//!   (see [`crate::clock_faces::Cat`]).
 //! - **Balloon**: a hot-air balloon whose altitude follows the hour
-//!   (see [`crate::ui::face_balloon`]).
+//!   (see [`crate::clock_faces::Balloon`]).
 //! - **Beach**: a beach whose sky tells day from night
-//!   (see [`crate::ui::face_beach`]).
+//!   (see [`crate::clock_faces::Beach`]).
+//!
+//! Every non-Analog/Digital face lives in [`crate::clock_faces`] as a unit
+//! struct implementing the [`crate::clock_faces::ClockFace`] trait; the async
+//! loop (gestures, redraw cadence) is shared there.
 //!
 //! The style is a runtime value the settings screen can change; it persists to
 //! flash via [`crate::storage`] and is restored at boot ([`init_clock_style`]).
@@ -30,23 +34,11 @@ use esp_hal::time::Instant as EspInstant;
 use oled_i2c::FONT_5X7;
 
 use crate::config;
+use crate::clock_faces;
 use crate::drivers::screen::Display;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::{Prev, Screen};
 use crate::time;
-use crate::ui::face_aquarium;
-use crate::ui::face_balloon;
-use crate::ui::face_beach;
-use crate::ui::face_cat;
-use crate::ui::face_firefly;
-use crate::ui::face_forest;
-use crate::ui::face_hourglass;
-use crate::ui::face_island;
-use crate::ui::face_lighthouse;
-use crate::ui::face_palm;
-use crate::ui::face_torii;
-use crate::ui::face_windmill;
-use crate::ui::face_waterfall;
 use crate::ui::geom;
 
 /// Which clock face the router shows as its interlude.
@@ -56,42 +48,42 @@ pub enum ClockStyle {
     Analog,
     /// Large `HH:MM` digital digits with a seconds readout.
     Digital,
-    /// Tropical coconut-palm scene (see [`crate::ui::face_palm`]).
+    /// Tropical coconut-palm scene (see [`crate::clock_faces::Palm`]).
     Palm,
     /// Lighthouse whose beam sweeps with the minutes
-    /// (see [`crate::ui::face_lighthouse`]).
+    /// (see [`crate::clock_faces::Lighthouse`]).
     Lighthouse,
     /// Cat whose eyes are miniature hour/minute dials
-    /// (see [`crate::ui::face_cat`]).
+    /// (see [`crate::clock_faces::Cat`]).
     Cat,
     /// Hot-air balloon whose altitude follows the hour
-    /// (see [`crate::ui::face_balloon`]).
+    /// (see [`crate::clock_faces::Balloon`]).
     Balloon,
-    /// Beach whose sky tells day/night (see [`crate::ui::face_beach`]).
+    /// Beach whose sky tells day/night (see [`crate::clock_faces::Beach`]).
     Beach,
     /// Windmill whose rotor turns with the minutes, the longest blade the
-    /// minute hand (see [`crate::ui::face_windmill`]).
+    /// minute hand (see [`crate::clock_faces::Windmill`]).
     Windmill,
     /// Hourglass whose sand drains across the hour
-    /// (see [`crate::ui::face_hourglass`]).
+    /// (see [`crate::clock_faces::Hourglass`]).
     Hourglass,
     /// Jar whose glowing fireflies count the 12-hour cycle
-    /// (see [`crate::ui::face_firefly`]).
+    /// (see [`crate::clock_faces::Firefly`]).
     Firefly,
     /// Fish tank whose goldfish's trip across the tank tells the minute
-    /// (see [`crate::ui::face_aquarium`]).
+    /// (see [`crate::clock_faces::Aquarium`]).
     Aquarium,
     /// Waterfall whose plunge pool fills through the hour
-    /// (see [`crate::ui::face_waterfall`]).
+    /// (see [`crate::clock_faces::Waterfall`]).
     Waterfall,
     /// Pine forest with a squirrel climbing the minute tree
-    /// (see [`crate::ui::face_forest`]).
+    /// (see [`crate::clock_faces::Forest`]).
     Forest,
     /// Red torii gate in the rising tide of the minutes
-    /// (see [`crate::ui::face_torii`]).
+    /// (see [`crate::clock_faces::Torii`]).
     Torii,
     /// Lakeside house on an island whose boat circles by the minute
-    /// (see [`crate::ui::face_island`]).
+    /// (see [`crate::clock_faces::IslandHouse`]).
     IslandHouse,
 }
 
@@ -381,18 +373,6 @@ pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel
     match clock_style() {
         ClockStyle::Analog => show_analog(display, ms, tap).await,
         ClockStyle::Digital => show_digital(display, ms, tap).await,
-        ClockStyle::Palm => face_palm::show_palm(display, ms, tap).await,
-        ClockStyle::Lighthouse => face_lighthouse::show_lighthouse(display, ms, tap).await,
-        ClockStyle::Cat => face_cat::show_cat(display, ms, tap).await,
-        ClockStyle::Balloon => face_balloon::show_balloon(display, ms, tap).await,
-        ClockStyle::Beach => face_beach::show_beach(display, ms, tap).await,
-        ClockStyle::Windmill => face_windmill::show_windmill(display, ms, tap).await,
-        ClockStyle::Hourglass => face_hourglass::show_hourglass(display, ms, tap).await,
-        ClockStyle::Firefly => face_firefly::show_firefly(display, ms, tap).await,
-        ClockStyle::Aquarium => face_aquarium::show_aquarium(display, ms, tap).await,
-        ClockStyle::Waterfall => face_waterfall::show_waterfall(display, ms, tap).await,
-        ClockStyle::Forest => face_forest::show_forest(display, ms, tap).await,
-        ClockStyle::Torii => face_torii::show_torii(display, ms, tap).await,
-        ClockStyle::IslandHouse => face_island::show_island(display, ms, tap).await,
+        other => clock_faces::run_style(other, display, ms, tap).await,
     }
 }

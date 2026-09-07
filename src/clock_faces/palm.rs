@@ -4,20 +4,17 @@
 //! fan of drooping fronds that **slowly sway**, a cluster of coconuts, a rising
 //! sun behind the crown and a band of sand at the bottom. The right side shows
 //! the wall-clock time (`HH:MM`), seconds and date — all derived from the
-//! NTP-synced clock (see [`crate::time`]). The scene redraws once a second and
-//! whenever the sway moves, so it stays cheap on the single-threaded executor.
+//! NTP-synced clock (see [`crate::time`]).
 //!
-//! Gestures behave like the other clock faces: **single tap** sleeps the
-//! display ([`Screen::Off`]), **triple-tap** opens settings.
+//! Implemented as a unit struct implementing [`super::ClockFace`]; the async
+//! loop (gestures, redraw cadence) is shared in [`super::run`].
 
 use esp_hal::time::Instant as EspInstant;
 use oled_i2c::FONT_5X7;
 
+use super::ClockFace;
 use crate::config;
 use crate::drivers::screen::Display;
-use crate::drivers::tap::{self, Gesture, TapChannel};
-use crate::router::{Prev, Screen};
-use crate::time;
 use crate::ui::clock;
 use crate::ui::geom;
 
@@ -37,38 +34,6 @@ const FROND_DEG: [i32; 7] = [10, 65, 120, 275, 310, 345, 355];
 /// Per-frond length scale (10 = full length) matching [`FROND_DEG`].
 const FROND_SCALE: [i16; 7] = [10, 10, 8, 8, 10, 10, 10];
 
-/// Show the palm clock for `ms` milliseconds, checking the gesture channel so a
-/// triple-tap can jump to settings early. Returns the next screen.
-pub async fn show_palm(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
-    let mut remaining = ms as i64;
-    let mut last: Option<(u32, bool, i32)> = None;
-
-    while remaining > 0 {
-        let (h, m, s) = clock::now_hm();
-        let date = time::wall_date();
-        let sway = sway_now();
-        let key = (s, date.is_some(), sway);
-
-        // Redraw when the second rolls over, the date becomes available, or the
-        // sway tick moves (the animation is a 200 ms step, so ~5 anim frames/s).
-        if last != Some(key) {
-            draw_palm(display, h, m, s, date, sway);
-            last = Some(key);
-        }
-
-        let step = 200u32.min(remaining as u32);
-        embassy_time::Timer::after_millis(step as u64).await;
-        match tap::try_tap(tap) {
-            Some(Gesture::TripleTap) => return Screen::Settings,
-            // Single tap: sleep the display (returns to the same clock on wake).
-            Some(Gesture::Tap) => return Screen::Off(Prev::Clock),
-            _ => {}
-        }
-        remaining -= step as i64;
-    }
-    Screen::FacePlayer
-}
-
 /// Slow frond sway angle in degrees: ±8°, a full cycle every ~15 seconds.
 /// The sway value only changes every 500 ms so the face redraws at 2 fps
 /// rather than 10 fps — barely noticeable motion but much less CPU.
@@ -78,29 +43,37 @@ fn sway_now() -> i32 {
     (geom::sin_fp(deg) * 8) / 1024
 }
 
-/// Render the whole scene into the buffer and flush it.
-fn draw_palm(
-    display: &mut Display,
-    h: u32,
-    m: u32,
-    s: u32,
-    date: Option<(i32, u32, u32)>,
-    sway: i32,
-) {
-    display.clear_buffer();
-    display.set_font(&FONT_5X7);
-    display.set_text_color(true);
+/// The palm tree scene. Samples the frond sway at draw time; the shared 500 ms
+/// loop always redraws when it steps.
+pub struct Palm;
 
-    // Back to front: sun, fronds, trunk, then the coconuts (which hang over
-    // the junction at the crown) and the foreground sand.
-    draw_sun(display);
-    draw_fronds(display, sway);
-    draw_trunk(display);
-    draw_coconuts(display);
-    draw_sand(display);
-    clock::draw_readout(display, h, m, s, date);
+impl ClockFace for Palm {
+    fn draw(
+        &self,
+        display: &mut Display,
+        h: u32,
+        m: u32,
+        s: u32,
+        date: Option<(i32, u32, u32)>,
+        _t: u32,
+    ) {
+        let sway = sway_now();
 
-    let _ = display.flush();
+        display.clear_buffer();
+        display.set_font(&FONT_5X7);
+        display.set_text_color(true);
+
+        // Back to front: sun, fronds, trunk, then the coconuts (which hang over
+        // the junction at the crown) and the foreground sand.
+        draw_sun(display);
+        draw_fronds(display, sway);
+        draw_trunk(display);
+        draw_coconuts(display);
+        draw_sand(display);
+        clock::draw_readout(display, h, m, s, date);
+
+        let _ = display.flush();
+    }
 }
 
 /// Rising sun behind the crown.
