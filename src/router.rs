@@ -60,6 +60,8 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
     crate::time::init_gmt_offset();
     // Restore the persisted clock-face style (analog/digital/palm).
     clock::init_clock_style();
+    // Restore the persisted auto-rotate interval ("Auto Face" setting).
+    clock::init_rotate_interval();
 
     // `None` when the SD card is unusable / has no faces.
     let mut player = face_player::Player::new(driver);
@@ -103,17 +105,20 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
                 Some(p) => p.step(display, tap).await,
                 None => Screen::Settings,
             },
-            // An analog clock interlude between faces.
+            // Clock screen: opened by the user (double-tap a played face, or a
+            // wake from sleep) and stays on screen until they navigate away —
+            // there is no timeout back to the face player. Auto-rotation
+            // (Settings → "Auto Face") swaps random scene faces on a fixed
+            // interval while it stays open.
             Screen::Clock => {
-                // TEMP(dev-test): while DEV_SKIP_BOOT is set the clock runs
-                // forever (~49 days) so the face stays on screen while we
-                // iterate on it. Inactive when DEV_SKIP_BOOT is false.
-                let dur = if config::DEV_SKIP_BOOT {
-                    u32::MAX
+                // TEMP(dev-test): while DEV_SKIP_BOOT is set we stick to the
+                // selected face forever (no rotation) so the face under design
+                // stays on screen while iterating. Inactive otherwise.
+                if config::DEV_SKIP_BOOT {
+                    clock::show_clock(display, u32::MAX, tap).await
                 } else {
-                    crate::config::PLAYBACK.clock_duration_ms as u32
-                };
-                clock::show_clock(display, dur, tap).await
+                    clock::show_clock_sticky(display, tap).await
+                }
             }
             Screen::Settings => {
                 settings::show(display, tap, &mut brightness).await;

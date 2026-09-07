@@ -5,13 +5,14 @@
 //! - [`Player::new`] does the one-time setup (init SD, collect faces) and
 //!   returns `None` only if the card is unusable/empty.
 //! - [`Player::step`] plays a single face and returns the [`Screen`] to switch
-//!   to next (an analog-clock interlude between faces).
+//!   to next.
 //!
 //! Gestures arrive via the shared tap [`TapChannel`] (fed by the lightweight
 //! sensor task); the async frame waits yield to that task so a triple-tap can
-//! interrupt a face and open settings, a **double-tap** opens the analog clock
-//! interlude, and a single tap pauses the animation and sleeps the display
-//! ([`Screen::Off`]); tapping again resumes from the paused frame.
+//! interrupt a face and open settings, a **double-tap** opens the clock (which
+//! then stays on screen until the user leaves), and a single tap pauses the
+//! animation and sleeps the display ([`Screen::Off`]); tapping again resumes
+//! from the paused frame.
 
 use esp_println::{print, println};
 
@@ -33,11 +34,6 @@ pub struct Player {
     /// [`Player::step`] re-opens the same face and resumes at `next_frame`
     /// instead of restarting from frame 0.
     paused: Option<PauseFace>,
-    /// Earliest boot time at which the analog-clock interlude may run again.
-    /// The clock is shown at most once every [`config::PLAYBACK.clock_interval_ms`]
-    /// instead of after every single face, so long face sessions stay on the
-    /// faces and only interrupt for a clock intermittently.
-    next_clock_at: embassy_time::Instant,
 }
 
 /// Resumable playback position inside a face (stored while the display is
@@ -73,9 +69,6 @@ impl Player {
             frame_buf: [0u8; config::SCREEN_FRAME_BUF_SIZE],
             face_idx: 0,
             paused: None,
-            // Show the clock once after the first face, then at most every
-            // `clock_interval_ms` (config default 3 minutes) thereafter.
-            next_clock_at: embassy_time::Instant::now(),
         })
     }
 
@@ -150,8 +143,8 @@ impl Player {
                     file.close();
                     return Screen::Settings;
                 }
-                // Double tap: jump straight to the analog clock, then carry on
-                // with the next face when it times out.
+                // Double tap: jump straight to the clock; it stays on screen
+                // until the user leaves (no timeout back to the faces).
                 Some(Gesture::DoubleTap) => {
                     file.close();
                     self.face_idx = (self.face_idx + 1) % self.info.faces.len();
@@ -172,18 +165,7 @@ impl Player {
 
         file.close();
         self.face_idx = (self.face_idx + 1) % self.info.faces.len();
-        // Only pause for the analog clock once `clock_interval_ms` has elapsed
-        // since the previous interlude; otherwise immediately carry on with the
-        // next face. (Previously the clock ran after *every* face, which is why
-        // it showed up so often.)
-        let now = embassy_time::Instant::now();
-        if now >= self.next_clock_at {
-            self.next_clock_at = now
-                + embassy_time::Duration::from_millis(config::PLAYBACK.clock_interval_ms as u64);
-            Screen::Clock
-        } else {
-            Screen::FacePlayer
-        }
+        Screen::FacePlayer
     }
 }
 

@@ -41,8 +41,10 @@ enum TileKind {
     Timezone,
     /// User Wi-Fi on/off switch, applied live.
     WifiToggle,
-    /// Clock-face style (analog vs digital), stored in flash.
+    /// Clock-face style, stored in flash.
     ClockFace,
+    /// Auto-rotation interval for the clock face (Settings → "Auto Face").
+    RotateFace,
     /// Action: force the SoftAP provisioning mode back up.
     ForceAp,
 }
@@ -61,6 +63,7 @@ const TILES: &[Tile] = &[
     Tile { title: "GMT Offset", kind: TileKind::Timezone },
     Tile { title: "Wi-Fi", kind: TileKind::WifiToggle },
     Tile { title: "Clock Face", kind: TileKind::ClockFace },
+    Tile { title: "Auto Face", kind: TileKind::RotateFace },
     Tile { title: "AP Setup", kind: TileKind::ForceAp },
 ];
 
@@ -92,6 +95,7 @@ pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brigh
                 TileKind::Timezone => edit_timezone(display, tap).await,
                 TileKind::WifiToggle => edit_wifi(display, tap).await,
                 TileKind::ClockFace => toggle_clock_face(display).await,
+                TileKind::RotateFace => toggle_rotate_face(display).await,
                 TileKind::ForceAp => trigger_force_ap(display).await,
             },
             Gesture::TripleTap => return Screen::FacePlayer,
@@ -200,6 +204,13 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
             // The style label on the right, e.g. "Analog", "Lighthouse",
             // "Island" — taken from the shared [`clock::FACES`] table.
             let s = clock::face_label(clock::clock_style());
+            let w = s.len() as i16 * glyph_w;
+            display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
+        }
+        TileKind::RotateFace => {
+            // Rotation interval on the right, e.g. "Off", "1 hour" — from the
+            // shared [`clock::ROTATE_OPTIONS`] table.
+            let s = clock::rotate_label(clock::rotate_index());
             let w = s.len() as i16 * glyph_w;
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
         }
@@ -451,6 +462,30 @@ async fn toggle_clock_face(display: &mut screen::Display) {
     screen_edit_base(display, "Clock Face");
     display.set_text_color(true);
     let label = clock::face_label(next);
+    let w = label.len() as i16 * 12;
+    let x = (config::SCREEN_WIDTH as i16 - w) / 2;
+    display.set_text_size(2);
+    display.draw_str_with(x, 24, label, &FONT_5X7);
+    display.set_text_size(1);
+    display.draw_str_with(4, 40, "saved", &FONT_5X7);
+    let _ = display.flush();
+
+    embassy_time::Timer::after_millis(700).await;
+}
+
+/// "Auto Face" tile action: cycle the auto-rotation interval (Off → 15 min →
+/// 30 min → 1 hour → 2 hours → 6 hours → 12 hours → 24 hours → Off) and
+/// persist immediately, then show a brief confirmation — the same double-tap
+/// pattern as the "Clock Face" tile.
+async fn toggle_rotate_face(display: &mut screen::Display) {
+    let next = clock::next_rotate_index(clock::rotate_index());
+    clock::persist_rotate_interval(next);
+
+    // Brief confirmation showing the new interval.
+    display.clear_buffer();
+    screen_edit_base(display, "Auto Face");
+    display.set_text_color(true);
+    let label = clock::rotate_label(next);
     let w = label.len() as i16 * 12;
     let x = (config::SCREEN_WIDTH as i16 - w) / 2;
     display.set_text_size(2);

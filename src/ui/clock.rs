@@ -1,4 +1,4 @@
-//! Clock screens, shown as an interlude between played faces.
+//! Clock screens, opened by the user and kept on screen until they leave.
 //!
 //! The board has no RTC, so the clock ticks with **uptime** (`esp_hal::time::Instant`
 //! counts since boot), shifted to real wall-clock time once NTP sync is
@@ -26,6 +26,11 @@
 //! flash via [`crate::storage`] and is restored at boot ([`init_clock_style`]).
 //! A **single tap** on any face sleeps the display (returns [`Screen::Off`])
 //! and wakes back to the same face; a **triple-tap** jumps to settings.
+//!
+//! The clock never times out back to the face player on its own: it stays on
+//! screen until the user leaves (or sleeps). When auto-rotation is enabled
+//! (Settings → "Auto Face", default 1 hour) it swaps to a new random *scene*
+//! face on that interval, skipping the plain Analog / Digital faces.
 
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -41,9 +46,9 @@ use crate::router::{Prev, Screen};
 use crate::time;
 use crate::ui::geom;
 
-/// Which clock face the router shows as its interlude. The enum discriminant
-/// is the persisted style number (0..[`FACES`]), so keep the variants in
-/// exactly the same order as [`FACES`].
+/// Which clock face the clock shows. The enum discriminant is the persisted
+/// style number (0..[`FACES`]), so keep the variants in exactly the same
+/// order as [`FACES`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ClockStyle {
@@ -179,6 +184,105 @@ pub fn face_label(style: ClockStyle) -> &'static str {
 /// the first.
 pub fn next_style(style: ClockStyle) -> ClockStyle {
     style_at((style_index(style) + 1) % FACES.len() as u8)
+}
+
+// ---------------------------------------------------------------------------
+// Auto-rotation (Settings → "Auto Face")
+// ---------------------------------------------------------------------------
+
+/// Where the scene faces start inside [`FACES`]: indices `0` (Analog) and `1`
+/// (Digital) are the plain faces that auto-rotation skips.
+const SCENE_START: usize = 2;
+
+/// Auto-rotate interval options shown in Settings → "Auto Face". Index `0`
+/// ("Off") disables rotation — the clock always shows the face selected under
+/// "Clock Face". The persisted byte is the index into this table.
+pub const ROTATE_OPTIONS: &[(&str, u32)] = &[
+    ("Off", 0),                     // 0
+    ("15 min", 15 * 60_000),        // 1
+    ("30 min", 30 * 60_000),        // 2
+    ("1 hour", 60 * 60_000),        // 3
+    ("2 hours", 2 * 60 * 60_000),   // 4
+    ("6 hours", 6 * 60 * 60_000),   // 5
+    ("12 hours", 12 * 60 * 60_000), // 6
+    ("24 hours", 24 * 60 * 60_000), // 7
+];
+
+/// Default auto-rotate interval ("1 hour", index into [`ROTATE_OPTIONS`]).
+pub const ROTATE_DEFAULT_INDEX: u8 = 3;
+
+/// Runtime auto-rotate interval selection, backed by flash and restored at
+/// boot.
+static ROTATE: AtomicU8 = AtomicU8::new(ROTATE_DEFAULT_INDEX);
+
+/// Clamp an interval index into [`ROTATE_OPTIONS`].
+fn clamp_rotate(i: u8) -> u8 {
+    i.min((ROTATE_OPTIONS.len() - 1) as u8)
+}
+
+/// The selected auto-rotate interval index (`0` = rotation off).
+pub fn rotate_index() -> u8 {
+    clamp_rotate(ROTATE.load(Ordering::Acquire))
+}
+
+/// Human-readable label for an interval index (e.g. `"1 hour"`, `"Off"`);
+/// matches the [`ROTATE_OPTIONS`] table.
+pub fn rotate_label(index: u8) -> &'static str {
+    ROTATE_OPTIONS[clamp_rotate(index) as usize].0
+}
+
+/// The next interval in the settings rotation, wrapping from the last back to
+/// "Off".
+pub fn next_rotate_index(index: u8) -> u8 {
+    (clamp_rotate(index) + 1) % ROTATE_OPTIONS.len() as u8
+}
+
+/// Restore the persisted auto-rotate interval at boot.
+pub fn init_rotate_interval() {
+    let v = crate::storage::load_rotate_interval().min((ROTATE_OPTIONS.len() - 1) as u8);
+    ROTATE.store(v, Ordering::Release);
+}
+
+/// Set the auto-rotate interval in memory only; call [`persist_rotate_interval`]
+/// to store it permanently.
+fn set_rotate_interval(index: u8) {
+    ROTATE.store(clamp_rotate(index), Ordering::Release);
+}
+
+/// Persist the auto-rotate interval to flash.
+pub fn persist_rotate_interval(index: u8) {
+    let v = clamp_rotate(index);
+    set_rotate_interval(v);
+    crate::storage::save_rotate_interval(v);
+}
+
+/// Millisecond interval of the configured rotation, or `None` when rotation is
+/// off.
+fn rotate_interval_ms() -> Option<u32> {
+    let (_, ms) = ROTATE_OPTIONS[rotate_index() as usize];
+    (ms > 0).then_some(ms)
+}
+
+/// A pseudo-random scene-face index into [`FACES`] (within
+/// `SCENE_START..FACES.len()`). Seeded from the uptime counter — no RNG
+/// peripheral, cheap, plenty random to pick a face.
+fn random_scene_index() -> usize {
+    let mut x = (EspInstant::now().duration_since_epoch().as_micros() as u32) ^ 0x9E37_79B9;
+    // xorshift32: a few scrambles so consecutive seeds land anywhere.
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    SCENE_START + x as usize % (FACES.len() - SCENE_START)
+}
+
+/// A random scene face, guaranteed different from `current` so a rotation
+/// never shows the same face twice in a row.
+fn random_scene_style(current: ClockStyle) -> ClockStyle {
+    let mut i = random_scene_index();
+    if i == style_index(current) as usize {
+        i = SCENE_START + (i - SCENE_START + 1) % (FACES.len() - SCENE_START);
+    }
+    style_at(i as u8)
 }
 
 // ---------------------------------------------------------------------------
@@ -386,12 +490,51 @@ fn draw_digital(display: &mut Display, h: u32, m: u32, s: u32, date: Option<(i32
 // Public dispatcher
 // ---------------------------------------------------------------------------
 
-/// Show the configured clock face for `ms` milliseconds. Returns the next
-/// screen (settings on triple-tap, asleep on single-tap, face player on end).
-pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
-    match clock_style() {
+/// Render one face (`style`) for `ms` milliseconds, checking the gesture
+/// channel so a triple-tap can jump to settings early. Returns the next
+/// screen (settings on triple-tap, asleep on single-tap, face player once
+/// `ms` elapses).
+async fn show_one(
+    display: &mut Display,
+    style: ClockStyle,
+    ms: u32,
+    tap: &'static TapChannel,
+) -> Screen {
+    match style {
         ClockStyle::Analog => show_analog(display, ms, tap).await,
         ClockStyle::Digital => show_digital(display, ms, tap).await,
         other => clock_faces::run_style(other, display, ms, tap).await,
+    }
+}
+
+/// Show the configured clock face for `ms` milliseconds. Returns the next
+/// screen (settings on triple-tap, asleep on single-tap, face player on end).
+/// Normal use goes through [`show_clock_sticky`]; this single-shot entry stays
+/// for the dev-test boot path (`DEV_SKIP_BOOT`).
+pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
+    show_one(display, clock_style(), ms, tap).await
+}
+
+/// Show the clock indefinitely (until the user leaves): the face selected
+/// under Settings → "Clock Face", or — when auto-rotation is on — random
+/// scene faces swapped on the configured interval ("Auto Face" setting).
+///
+/// Returns settings on triple-tap and asleep (same clock) on single-tap; the
+/// clock never times out back to the face player on its own.
+pub async fn show_clock_sticky(display: &mut Display, tap: &'static TapChannel) -> Screen {
+    let Some(interval) = rotate_interval_ms() else {
+        // Rotation off: just show the selected face forever.
+        return show_one(display, clock_style(), u32::MAX, tap).await;
+    };
+    // Rotation on: start on a random scene face (skipping Analog / Digital),
+    // then swap to a new random scene face every `interval`.
+    let mut style = random_scene_style(clock_style());
+    loop {
+        match show_one(display, style, interval, tap).await {
+            // The interval elapsed → pick the next random scene face.
+            Screen::FacePlayer => style = random_scene_style(style),
+            // Gesture: triple-tap → settings, single-tap → sleep.
+            other => return other,
+        }
     }
 }

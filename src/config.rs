@@ -129,21 +129,15 @@ pub const MOCHI_DIR: &str = "/DasaiMochi/Mochi";
 pub struct Playback {
     pub speed_divisor: u32,
     pub negative: bool,
-    /// How often (ms) the clock is shown between faces.
-    pub clock_interval_ms: u64,
-    /// How long (ms) the clock stays on each time.
-    pub clock_duration_ms: u64,
 }
 
 pub const PLAYBACK: Playback = Playback {
     speed_divisor: 1,
     negative: false,
-    clock_interval_ms: 180_000,  // 3 minutes
-    clock_duration_ms: 5_000,    // 5 seconds
 };
 
 // ---------------------------------------------------------------------------
-// Analog clock placeholder (shown between faces)
+// Clock face layout
 // ---------------------------------------------------------------------------
 
 /// Clock face layout in panel pixels.

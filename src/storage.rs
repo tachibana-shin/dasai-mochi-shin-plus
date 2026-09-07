@@ -18,16 +18,18 @@
 use esp_storage::ll;
 
 use crate::config;
-use crate::ui::clock::FACES;
+use crate::ui::clock::{FACES, ROTATE_DEFAULT_INDEX, ROTATE_OPTIONS};
 
 /// Physical flash offset of the config sector (4 KB aligned).
 const STORAGE_OFFSET: u32 = 0x001F_0000;
 /// Flash sector size in bytes (ESP32-C3 NOR flash).
 const SECTOR_SIZE: u32 = 4096;
-/// Bytes we use in the sector: `[magic: 4][brightness: 1][clock_style: 1][gmt_offset: i32]`.
+/// Bytes we use in the sector:
+/// `[magic: 4][brightness: 1][clock_style: 1][gmt_offset: i32][rotate: 1]`.
 /// Brightness lives at byte 4 (unchanged from the original layout for
 /// compatibility); the clock-face style previously sat in the reserved byte at
-/// index 5; the UTC offset occupies bytes 6..10. Total 10, padded to a
+/// index 5; the UTC offset occupies bytes 6..10; the auto-rotate interval
+/// (index into [`ROTATE_OPTIONS`]) occupies byte 10. Total 11, padded to a
 /// word-aligned read length of 12.
 const STORAGE_LEN: usize = 12;
 /// Byte index of the brightness value within the sector.
@@ -36,6 +38,9 @@ const BRIGHTNESS_BYTE: usize = 4;
 const CLOCK_STYLE_BYTE: usize = 5;
 /// Byte index of the UTC offset (i32, little-endian) within the sector.
 const GMT_OFFSET_BYTE: usize = 6;
+/// Byte index of the auto-rotate interval (index into [`ROTATE_OPTIONS`],
+/// `0` = rotation off) within the sector.
+const ROTATE_BYTE: usize = 10;
 
 /// Magic identifier distinguishing "ours" from freshly-erased (`0xFF`) flash.
 const MAGIC: u32 = 0xD45A_4A55;
@@ -86,11 +91,12 @@ pub fn load_brightness() -> u8 {
 pub fn save_brightness(value: u8) {
     let gmt = load_raw_gmt();
     let style = load_raw_clock_style();
+    let rotate = load_raw_rotate();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(value, gmt, style);
+    write_sector(value, gmt, style, rotate);
 }
 
 /// Load the stored clock-face style (the [`crate::ui::clock::FACES`]
@@ -117,11 +123,50 @@ pub fn load_clock_style() -> u8 {
 pub fn save_clock_style(value: u8) {
     let brightness = load_brightness();
     let gmt = load_raw_gmt();
+    let rotate = load_raw_rotate();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(brightness, gmt, value.min((FACES.len() - 1) as u8));
+    write_sector(brightness, gmt, value.min((FACES.len() - 1) as u8), rotate);
+}
+
+/// Load the stored auto-rotate interval (index into [`ROTATE_OPTIONS`]),
+/// falling back to the default if nothing valid is stored or the value is out
+/// of range.
+fn load_raw_rotate() -> u8 {
+    let Some(bytes) = read_sector() else {
+        return ROTATE_DEFAULT_INDEX;
+    };
+    let v = bytes[ROTATE_BYTE];
+    if v >= ROTATE_OPTIONS.len() as u8 {
+        ROTATE_DEFAULT_INDEX
+    } else {
+        v
+    }
+}
+
+/// Public auto-rotate loader, used at boot to restore the interval setting.
+pub fn load_rotate_interval() -> u8 {
+    load_raw_rotate()
+}
+
+/// Persist the auto-rotate interval across reboots, preserving the other
+/// settings.
+pub fn save_rotate_interval(value: u8) {
+    let brightness = load_brightness();
+    let gmt = load_raw_gmt();
+    let style = load_raw_clock_style();
+    unsafe {
+        let _ = ll::spiflash_unlock();
+        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
+    }
+    write_sector(
+        brightness,
+        gmt,
+        style,
+        value.min((ROTATE_OPTIONS.len() - 1) as u8),
+    );
 }
 
 /// Load the stored UTC offset in whole hours, falling back to the default if
@@ -152,22 +197,24 @@ pub fn load_gmt_offset() -> i32 {
 pub fn save_gmt_offset(value: i32) {
     let brightness = load_brightness();
     let style = load_raw_clock_style();
+    let rotate = load_raw_rotate();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(brightness, value.clamp(crate::time::GMT_MIN, crate::time::GMT_MAX), style);
+    write_sector(brightness, value.clamp(crate::time::GMT_MIN, crate::time::GMT_MAX), style, rotate);
 }
 
-/// Write brightness, UTC offset and clock-face style to the config sector in
-/// one erase.
-fn write_sector(brightness: u8, gmt: i32, style: u8) {
+/// Write brightness, UTC offset, clock-face style and auto-rotate interval to
+/// the config sector in one erase.
+fn write_sector(brightness: u8, gmt: i32, style: u8, rotate: u8) {
     let magic = MAGIC.to_le_bytes();
     let mut bytes = [0u8; STORAGE_LEN];
     bytes[0..4].copy_from_slice(&magic);
     bytes[BRIGHTNESS_BYTE] = brightness;
     bytes[CLOCK_STYLE_BYTE] = style;
     bytes[GMT_OFFSET_BYTE..GMT_OFFSET_BYTE + 4].copy_from_slice(&gmt.to_le_bytes());
+    bytes[ROTATE_BYTE] = rotate;
     let mut raw = [0u32; STORAGE_LEN / 4];
     for (i, block) in bytes.chunks_exact(4).enumerate() {
         raw[i] = u32::from_le_bytes([block[0], block[1], block[2], block[3]]);
