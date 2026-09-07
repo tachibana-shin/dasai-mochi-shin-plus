@@ -43,6 +43,44 @@ pub fn set_brightness(display: &mut Display, value: u8) {
     let _ = display.set_contrast(value);
 }
 
+// ── Burn-in prevention ────────────────────────────────────────────────
+/// SH1106 default column offset (132-col RAM → 128-col panel, centered).
+const BURN_IN_BASE_COL: u8 = 2;
+/// 4-step pixel-orbit cycle: (column_offset, start_line) per step.
+const BURN_IN_COL: [u8; 4] = [
+    BURN_IN_BASE_COL,
+    BURN_IN_BASE_COL + 1,
+    BURN_IN_BASE_COL + 1,
+    BURN_IN_BASE_COL,
+];
+const BURN_IN_LINE: [u8; 4] = [0, 0, 1, 1];
+/// 30 minutes in milliseconds.
+const BURN_IN_INTERVAL_MS: u64 = 30 * 60 * 1000;
+
+// SAFETY: single-threaded embassy executor; only the router task accesses these.
+static mut BURN_IN_DEADLINE_MS: u64 = 0;
+static mut BURN_IN_STEP: u8 = 0;
+
+/// Check if 30 minutes have passed since the last pixel shift; if so, advance
+/// the 4-step orbit and apply the hardware offset to the display.
+pub fn maybe_burn_in_shift(display: &mut Display) {
+    let now_ms: u64 = esp_hal::time::Instant::now()
+        .duration_since_epoch()
+        .as_millis();
+    unsafe {
+        if BURN_IN_DEADLINE_MS == 0 {
+            BURN_IN_DEADLINE_MS = now_ms + BURN_IN_INTERVAL_MS;
+        }
+        if now_ms >= BURN_IN_DEADLINE_MS {
+            BURN_IN_STEP = (BURN_IN_STEP + 1) % 4;
+            let i = BURN_IN_STEP as usize;
+            let _ = display.set_column_offset(BURN_IN_COL[i]);
+            let _ = display.set_start_line(BURN_IN_LINE[i]);
+            BURN_IN_DEADLINE_MS = now_ms + BURN_IN_INTERVAL_MS;
+        }
+    }
+}
+
 /// Blank the panel (display-off command). The RAM contents are preserved, so a
 /// later [`display_on`] instantly restores the frame that was on screen —
 /// this is what powers "single tap = sleep, tap again = wake" behaviour.

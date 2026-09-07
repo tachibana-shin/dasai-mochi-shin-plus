@@ -47,6 +47,7 @@ pub use windmill::Windmill;
 
 use esp_hal::time::Instant as EspInstant;
 
+use crate::drivers::screen;
 use crate::drivers::screen::Display;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::{Prev, Screen};
@@ -89,6 +90,7 @@ pub async fn run<F: ClockFace>(
     let mut last: Option<(u32, bool, u32, u32)> = None;
 
     while remaining > 0 {
+        screen::maybe_burn_in_shift(display);
         let (h, m, s) = clock::now_hm();
         let date = time::wall_date();
         // Redraw on the sub-second tick (all sub-second animations), when the

@@ -40,6 +40,7 @@ use oled_i2c::FONT_5X7;
 
 use crate::config;
 use crate::clock_faces;
+use crate::drivers::screen;
 use crate::drivers::screen::Display;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::{Prev, Screen};
@@ -377,6 +378,7 @@ async fn show_analog(display: &mut Display, ms: u32, tap: &'static TapChannel) -
     display.clear_buffer();
     let mut remaining = ms as i64;
     while remaining > 0 {
+        screen::maybe_burn_in_shift(display);
         let (hours, mins, secs) = now_hm();
 
         draw_clock_face(display);
@@ -420,6 +422,7 @@ async fn show_digital(display: &mut Display, ms: u32, tap: &'static TapChannel) 
     let mut remaining = ms as i64;
 
     while remaining > 0 {
+        screen::maybe_burn_in_shift(display);
         let (h, m, s) = now_hm();
         let date = time::wall_date();
         // `has_date` flags whether the date line is populated (`false` when the
