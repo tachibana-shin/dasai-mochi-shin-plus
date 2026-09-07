@@ -30,7 +30,7 @@ use crate::drivers::screen;
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::router::Screen;
 use crate::time;
-use crate::ui::clock::{self, ClockStyle};
+use crate::ui::clock;
 
 /// The kinds of settings tiles. Each maps to a distinct edit/action handler.
 #[derive(Clone, Copy, PartialEq)]
@@ -197,27 +197,9 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, shown, &FONT_5X7);
         }
         TileKind::ClockFace => {
-            // "Analog" / "Digital" / "Palm" / "Lighthouse" / "Cat" / "Balloon"
-            // / "Beach" / "Windmill" / "Hourglass" / "Firefly" / "Aquarium"
-            // / "Waterfall" / "Forest" / "Torii" / "Island"
-            // on the right.
-            let s = match clock::clock_style() {
-                ClockStyle::Analog => "Analog",
-                ClockStyle::Digital => "Digital",
-                ClockStyle::Palm => "Palm",
-                ClockStyle::Lighthouse => "Lighthouse",
-                ClockStyle::Cat => "Cat",
-                ClockStyle::Balloon => "Balloon",
-                ClockStyle::Beach => "Beach",
-                ClockStyle::Windmill => "Windmill",
-                ClockStyle::Hourglass => "Hourglass",
-                ClockStyle::Firefly => "Firefly",
-                ClockStyle::Aquarium => "Aquarium",
-                ClockStyle::Waterfall => "Waterfall",
-                ClockStyle::Forest => "Forest",
-                ClockStyle::Torii => "Torii",
-                ClockStyle::IslandHouse => "Island",
-            };
+            // The style label on the right, e.g. "Analog", "Lighthouse",
+            // "Island" — taken from the shared [`clock::FACES`] table.
+            let s = clock::face_label(clock::clock_style());
             let w = s.len() as i16 * glyph_w;
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
         }
@@ -454,53 +436,22 @@ fn render_wifi_marquee(
     let _ = display.flush();
 }
 
-/// Clock-face tile action: cycle through all sixteen faces (Analog → Digital →
+/// Clock-face tile action: cycle through all fifteen faces (Analog → Digital →
 /// Palm → Lighthouse → Cat → Balloon → Beach → Windmill → Hourglass → Firefly
-/// → Aquarium → Waterfall → Forest → Fuji → Torii → Island → Analog) and
-/// persist immediately, then show a brief
+/// → Aquarium → Waterfall → Forest → Torii → Island → Analog) and persist
+/// immediately, then show a brief
 /// confirmation. Double-tapping the tile in the list is all it takes — no
 /// separate edit screen for a multi-way switch.
 async fn toggle_clock_face(display: &mut screen::Display) {
-    let next = match clock::clock_style() {
-        ClockStyle::Analog => ClockStyle::Digital,
-        ClockStyle::Digital => ClockStyle::Palm,
-        ClockStyle::Palm => ClockStyle::Lighthouse,
-        ClockStyle::Lighthouse => ClockStyle::Cat,
-        ClockStyle::Cat => ClockStyle::Balloon,
-        ClockStyle::Balloon => ClockStyle::Beach,
-        ClockStyle::Beach => ClockStyle::Windmill,
-        ClockStyle::Windmill => ClockStyle::Hourglass,
-        ClockStyle::Hourglass => ClockStyle::Firefly,
-        ClockStyle::Firefly => ClockStyle::Aquarium,
-        ClockStyle::Aquarium => ClockStyle::Waterfall,
-        ClockStyle::Waterfall => ClockStyle::Forest,
-        ClockStyle::Forest => ClockStyle::Torii,
-        ClockStyle::Torii => ClockStyle::IslandHouse,
-        ClockStyle::IslandHouse => ClockStyle::Analog,
-    };
+    let next = clock::next_style(clock::clock_style());
     clock::persist_clock_style(next);
 
     // Brief confirmation showing the new style.
     display.clear_buffer();
     screen_edit_base(display, "Clock Face");
     display.set_text_color(true);
-    let (label, w) = match next {
-        ClockStyle::Analog => ("Analog", 6 * 12),
-        ClockStyle::Digital => ("Digital", 7 * 12),
-        ClockStyle::Palm => ("Palm", 4 * 12),
-        ClockStyle::Lighthouse => ("Lighthouse", 10 * 12),
-        ClockStyle::Cat => ("Cat", 3 * 12),
-        ClockStyle::Balloon => ("Balloon", 7 * 12),
-        ClockStyle::Beach => ("Beach", 5 * 12),
-        ClockStyle::Windmill => ("Windmill", 8 * 12),
-        ClockStyle::Hourglass => ("Hourglass", 9 * 12),
-        ClockStyle::Firefly => ("Firefly", 7 * 12),
-        ClockStyle::Aquarium => ("Aquarium", 8 * 12),
-        ClockStyle::Waterfall => ("Waterfall", 9 * 12),
-        ClockStyle::Forest => ("Forest", 6 * 12),
-        ClockStyle::Torii => ("Torii", 5 * 12),
-        ClockStyle::IslandHouse => ("Island", 6 * 12),
-    };
+    let label = clock::face_label(next);
+    let w = label.len() as i16 * 12;
     let x = (config::SCREEN_WIDTH as i16 - w) / 2;
     display.set_text_size(2);
     display.draw_str_with(x, 24, label, &FONT_5X7);

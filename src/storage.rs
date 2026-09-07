@@ -18,6 +18,7 @@
 use esp_storage::ll;
 
 use crate::config;
+use crate::ui::clock::FACES;
 
 /// Physical flash offset of the config sector (4 KB aligned).
 const STORAGE_OFFSET: u32 = 0x001F_0000;
@@ -92,17 +93,15 @@ pub fn save_brightness(value: u8) {
     write_sector(value, gmt, style);
 }
 
-/// Load the stored clock-face style (`0` analog, `1` digital, `2` palm, `3`
-/// lighthouse, `4` cat, `5` balloon, `6` beach, `7` windmill, `8` hourglass,
-/// `9` firefly, `10` aquarium, `11` waterfall, `12` forest, `13` fuji,
-/// `14` torii, `15` island), falling back to the default if
-/// nothing valid is stored or the value is out of range.
+/// Load the stored clock-face style (the [`crate::ui::clock::FACES`]
+/// index), falling back to the default if nothing valid is stored or the
+/// value is out of range.
 fn load_raw_clock_style() -> u8 {
     let Some(bytes) = read_sector() else {
         return config::CLOCK_DEFAULT_STYLE;
     };
     let v = bytes[CLOCK_STYLE_BYTE];
-    if v > 15 {
+    if v >= FACES.len() as u8 {
         config::CLOCK_DEFAULT_STYLE
     } else {
         v
@@ -122,7 +121,7 @@ pub fn save_clock_style(value: u8) {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(brightness, gmt, value.min(14));
+    write_sector(brightness, gmt, value.min((FACES.len() - 1) as u8));
 }
 
 /// Load the stored UTC offset in whole hours, falling back to the default if

@@ -41,8 +41,11 @@ use crate::router::{Prev, Screen};
 use crate::time;
 use crate::ui::geom;
 
-/// Which clock face the router shows as its interlude.
+/// Which clock face the router shows as its interlude. The enum discriminant
+/// is the persisted style number (0..[`FACES`]), so keep the variants in
+/// exactly the same order as [`FACES`].
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ClockStyle {
     /// Hands + ticks + hub (the original face).
     Analog,
@@ -90,9 +93,41 @@ pub enum ClockStyle {
 /// Runtime clock-face selection, backed by flash and restored at boot.
 static STYLE: AtomicU8 = AtomicU8::new(0);
 
-/// The currently selected clock face ([`ClockStyle::Analog`] by default).
-pub fn clock_style() -> ClockStyle {
-    match STYLE.load(Ordering::Acquire) {
+/// Every clock-face style in [`ClockStyle`] variant order. The index within
+/// this slice is both the persisted style number and the enum discriminant.
+///
+/// When adding a face you touch exactly three places: the [`ClockStyle`]
+/// variant (above), this table, and one arm in
+/// [`crate::clock_faces::run_style`]. Labels, the settings rotation,
+/// persistence and the storage clamp all derive from this single table.
+pub const FACES: &[&str] = &[
+    "Analog",   // 0
+    "Digital",  // 1
+    "Palm",     // 2
+    "Lighthouse", // 3
+    "Cat",      // 4
+    "Balloon",  // 5
+    "Beach",    // 6
+    "Windmill", // 7
+    "Hourglass", // 8
+    "Firefly",  // 9
+    "Aquarium", // 10
+    "Waterfall", // 11
+    "Forest",   // 12
+    "Torii",    // 13
+    "Island",   // 14
+];
+
+/// Numeric style persistence value (the enum discriminant / [`FACES`] index).
+pub fn style_index(style: ClockStyle) -> u8 {
+    style as u8
+}
+
+/// Map a persisted style number back to a [`ClockStyle`], clamping any
+/// out-of-range value (older or corrupt storage) to [`ClockStyle::Analog`].
+fn style_at(i: u8) -> ClockStyle {
+    match i {
+        0 => ClockStyle::Analog,
         1 => ClockStyle::Digital,
         2 => ClockStyle::Palm,
         3 => ClockStyle::Lighthouse,
@@ -111,55 +146,39 @@ pub fn clock_style() -> ClockStyle {
     }
 }
 
+/// The currently selected clock face ([`ClockStyle::Analog`] by default).
+pub fn clock_style() -> ClockStyle {
+    style_at(STYLE.load(Ordering::Acquire))
+}
+
 /// Restore the persisted clock-face style at boot.
 pub fn init_clock_style() {
-    STYLE.store(crate::storage::load_clock_style().min(14), Ordering::Release);
+    let v = crate::storage::load_clock_style().min((FACES.len() - 1) as u8);
+    STYLE.store(v, Ordering::Release);
 }
 
 /// Set the clock-face style in memory only (applied live during editing);
 /// call [`persist_clock_style`] to store it permanently.
 pub fn set_clock_style(style: ClockStyle) {
-    let v = match style {
-        ClockStyle::Analog => 0,
-        ClockStyle::Digital => 1,
-        ClockStyle::Palm => 2,
-        ClockStyle::Lighthouse => 3,
-        ClockStyle::Cat => 4,
-        ClockStyle::Balloon => 5,
-        ClockStyle::Beach => 6,
-        ClockStyle::Windmill => 7,
-        ClockStyle::Hourglass => 8,
-        ClockStyle::Firefly => 9,
-        ClockStyle::Aquarium => 10,
-        ClockStyle::Waterfall => 11,
-        ClockStyle::Forest => 12,
-        ClockStyle::Torii => 13,
-        ClockStyle::IslandHouse => 14,
-    };
-    STYLE.store(v, Ordering::Release);
+    STYLE.store(style_index(style), Ordering::Release);
 }
 
 /// Persist the current clock-face style to flash.
 pub fn persist_clock_style(style: ClockStyle) {
     set_clock_style(style);
-    let v = match style {
-        ClockStyle::Analog => 0,
-        ClockStyle::Digital => 1,
-        ClockStyle::Palm => 2,
-        ClockStyle::Lighthouse => 3,
-        ClockStyle::Cat => 4,
-        ClockStyle::Balloon => 5,
-        ClockStyle::Beach => 6,
-        ClockStyle::Windmill => 7,
-        ClockStyle::Hourglass => 8,
-        ClockStyle::Firefly => 9,
-        ClockStyle::Aquarium => 10,
-        ClockStyle::Waterfall => 11,
-        ClockStyle::Forest => 12,
-        ClockStyle::Torii => 13,
-        ClockStyle::IslandHouse => 14,
-    };
-    crate::storage::save_clock_style(v);
+    crate::storage::save_clock_style(style_index(style));
+}
+
+/// Human-readable label for a style (e.g. `"Island"` for
+/// [`ClockStyle::IslandHouse`]); matches the [`FACES`] table.
+pub fn face_label(style: ClockStyle) -> &'static str {
+    FACES[style_index(style) as usize]
+}
+
+/// The next style in the settings rotation, wrapping from the last back to
+/// the first.
+pub fn next_style(style: ClockStyle) -> ClockStyle {
+    style_at((style_index(style) + 1) % FACES.len() as u8)
 }
 
 // ---------------------------------------------------------------------------
