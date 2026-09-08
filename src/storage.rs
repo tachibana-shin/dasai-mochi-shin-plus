@@ -18,6 +18,7 @@
 use esp_storage::ll;
 
 use crate::config;
+use crate::drivers::screen::{BURN_IN_DEFAULT_INDEX, BURN_IN_OPTIONS};
 use crate::ui::clock::{FACES, ROTATE_DEFAULT_INDEX, ROTATE_OPTIONS};
 
 /// Physical flash offset of the config sector (4 KB aligned).
@@ -25,12 +26,13 @@ const STORAGE_OFFSET: u32 = 0x001F_0000;
 /// Flash sector size in bytes (ESP32-C3 NOR flash).
 const SECTOR_SIZE: u32 = 4096;
 /// Bytes we use in the sector:
-/// `[magic: 4][brightness: 1][clock_style: 1][gmt_offset: i32][rotate: 1]`.
+/// `[magic: 4][brightness: 1][clock_style: 1][gmt_offset: i32][rotate: 1][burn_in: 1]`.
 /// Brightness lives at byte 4 (unchanged from the original layout for
 /// compatibility); the clock-face style previously sat in the reserved byte at
 /// index 5; the UTC offset occupies bytes 6..10; the auto-rotate interval
-/// (index into [`ROTATE_OPTIONS`]) occupies byte 10. Total 11, padded to a
-/// word-aligned read length of 12.
+/// (index into [`ROTATE_OPTIONS`]) occupies byte 10 and the burn-in shift
+/// interval (index into [`BURN_IN_OPTIONS`]) byte 11 (formerly padding). Total
+/// 12, exactly filling the word-aligned read length.
 const STORAGE_LEN: usize = 12;
 /// Byte index of the brightness value within the sector.
 const BRIGHTNESS_BYTE: usize = 4;
@@ -41,6 +43,10 @@ const GMT_OFFSET_BYTE: usize = 6;
 /// Byte index of the auto-rotate interval (index into [`ROTATE_OPTIONS`],
 /// `0` = rotation off) within the sector.
 const ROTATE_BYTE: usize = 10;
+/// Byte index of the burn-in shift interval (index into [`BURN_IN_OPTIONS`])
+/// within the sector. Was `0x00` padding in older firmware, which is why index
+/// `0` in [`BURN_IN_OPTIONS`] is the default "30 min" and not "Off".
+const BURN_IN_BYTE: usize = 11;
 
 /// Magic identifier distinguishing "ours" from freshly-erased (`0xFF`) flash.
 const MAGIC: u32 = 0xD45A_4A55;
@@ -92,11 +98,12 @@ pub fn save_brightness(value: u8) {
     let gmt = load_raw_gmt();
     let style = load_raw_clock_style();
     let rotate = load_raw_rotate();
+    let burn_in = load_raw_burn_in();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(value, gmt, style, rotate);
+    write_sector(value, gmt, style, rotate, burn_in);
 }
 
 /// Load the stored clock-face style (the [`crate::ui::clock::FACES`]
@@ -124,11 +131,12 @@ pub fn save_clock_style(value: u8) {
     let brightness = load_brightness();
     let gmt = load_raw_gmt();
     let rotate = load_raw_rotate();
+    let burn_in = load_raw_burn_in();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(brightness, gmt, value.min((FACES.len() - 1) as u8), rotate);
+    write_sector(brightness, gmt, value.min((FACES.len() - 1) as u8), rotate, burn_in);
 }
 
 /// Load the stored auto-rotate interval (index into [`ROTATE_OPTIONS`]),
@@ -157,6 +165,7 @@ pub fn save_rotate_interval(value: u8) {
     let brightness = load_brightness();
     let gmt = load_raw_gmt();
     let style = load_raw_clock_style();
+    let burn_in = load_raw_burn_in();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
@@ -166,6 +175,47 @@ pub fn save_rotate_interval(value: u8) {
         gmt,
         style,
         value.min((ROTATE_OPTIONS.len() - 1) as u8),
+        burn_in,
+    );
+}
+
+/// Load the stored burn-in shift interval (index into [`BURN_IN_OPTIONS`]),
+/// falling back to the default if nothing valid is stored or the value is out
+/// of range.
+fn load_raw_burn_in() -> u8 {
+    let Some(bytes) = read_sector() else {
+        return BURN_IN_DEFAULT_INDEX;
+    };
+    let v = bytes[BURN_IN_BYTE];
+    if v >= BURN_IN_OPTIONS.len() as u8 {
+        BURN_IN_DEFAULT_INDEX
+    } else {
+        v
+    }
+}
+
+/// Public burn-in interval loader, used at boot to restore the setting.
+pub fn load_burn_in_interval() -> u8 {
+    load_raw_burn_in()
+}
+
+/// Persist the burn-in shift interval across reboots, preserving the other
+/// settings.
+pub fn save_burn_in_interval(value: u8) {
+    let brightness = load_brightness();
+    let gmt = load_raw_gmt();
+    let style = load_raw_clock_style();
+    let rotate = load_raw_rotate();
+    unsafe {
+        let _ = ll::spiflash_unlock();
+        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
+    }
+    write_sector(
+        brightness,
+        gmt,
+        style,
+        rotate,
+        value.min((BURN_IN_OPTIONS.len() - 1) as u8),
     );
 }
 
@@ -198,16 +248,23 @@ pub fn save_gmt_offset(value: i32) {
     let brightness = load_brightness();
     let style = load_raw_clock_style();
     let rotate = load_raw_rotate();
+    let burn_in = load_raw_burn_in();
     unsafe {
         let _ = ll::spiflash_unlock();
         let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
     }
-    write_sector(brightness, value.clamp(crate::time::GMT_MIN, crate::time::GMT_MAX), style, rotate);
+    write_sector(
+        brightness,
+        value.clamp(crate::time::GMT_MIN, crate::time::GMT_MAX),
+        style,
+        rotate,
+        burn_in,
+    );
 }
 
-/// Write brightness, UTC offset, clock-face style and auto-rotate interval to
-/// the config sector in one erase.
-fn write_sector(brightness: u8, gmt: i32, style: u8, rotate: u8) {
+/// Write brightness, UTC offset, clock-face style, auto-rotate interval and
+/// burn-in interval to the config sector in one erase.
+fn write_sector(brightness: u8, gmt: i32, style: u8, rotate: u8, burn_in: u8) {
     let magic = MAGIC.to_le_bytes();
     let mut bytes = [0u8; STORAGE_LEN];
     bytes[0..4].copy_from_slice(&magic);
@@ -215,6 +272,7 @@ fn write_sector(brightness: u8, gmt: i32, style: u8, rotate: u8) {
     bytes[CLOCK_STYLE_BYTE] = style;
     bytes[GMT_OFFSET_BYTE..GMT_OFFSET_BYTE + 4].copy_from_slice(&gmt.to_le_bytes());
     bytes[ROTATE_BYTE] = rotate;
+    bytes[BURN_IN_BYTE] = burn_in;
     let mut raw = [0u32; STORAGE_LEN / 4];
     for (i, block) in bytes.chunks_exact(4).enumerate() {
         raw[i] = u32::from_le_bytes([block[0], block[1], block[2], block[3]]);

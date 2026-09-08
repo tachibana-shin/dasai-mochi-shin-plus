@@ -45,6 +45,8 @@ enum TileKind {
     ClockFace,
     /// Auto-rotation interval for the clock face (Settings → "Auto Face").
     RotateFace,
+    /// Burn-in pixel-shift interval (Settings → "Burn-in").
+    BurnIn,
     /// Action: force the SoftAP provisioning mode back up.
     ForceAp,
 }
@@ -64,6 +66,7 @@ const TILES: &[Tile] = &[
     Tile { title: "Wi-Fi", kind: TileKind::WifiToggle },
     Tile { title: "Clock Face", kind: TileKind::ClockFace },
     Tile { title: "Auto Face", kind: TileKind::RotateFace },
+    Tile { title: "Burn-in", kind: TileKind::BurnIn },
     Tile { title: "AP Setup", kind: TileKind::ForceAp },
 ];
 
@@ -96,6 +99,7 @@ pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brigh
                 TileKind::WifiToggle => edit_wifi(display, tap).await,
                 TileKind::ClockFace => toggle_clock_face(display).await,
                 TileKind::RotateFace => toggle_rotate_face(display).await,
+                TileKind::BurnIn => toggle_burn_in(display).await,
                 TileKind::ForceAp => trigger_force_ap(display).await,
             },
             Gesture::TripleTap => return Screen::FacePlayer,
@@ -211,6 +215,13 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
             // Rotation interval on the right, e.g. "Off", "1 hour" — from the
             // shared [`clock::ROTATE_OPTIONS`] table.
             let s = clock::rotate_label(clock::rotate_index());
+            let w = s.len() as i16 * glyph_w;
+            display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
+        }
+        TileKind::BurnIn => {
+            // Burn-in shift interval on the right, e.g. "30 min", "Off" — from
+            // the shared [`screen::BURN_IN_OPTIONS`] table.
+            let s = screen::burn_in_label(screen::burn_in_index());
             let w = s.len() as i16 * glyph_w;
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
         }
@@ -486,6 +497,29 @@ async fn toggle_rotate_face(display: &mut screen::Display) {
     screen_edit_base(display, "Auto Face");
     display.set_text_color(true);
     let label = clock::rotate_label(next);
+    let w = label.len() as i16 * 12;
+    let x = (config::SCREEN_WIDTH as i16 - w) / 2;
+    display.set_text_size(2);
+    display.draw_str_with(x, 24, label, &FONT_5X7);
+    display.set_text_size(1);
+    display.draw_str_with(4, 40, "saved", &FONT_5X7);
+    let _ = display.flush();
+
+    embassy_time::Timer::after_millis(700).await;
+}
+
+/// "Burn-in" tile action: cycle the pixel-shift interval (30 min → 15 min →
+/// 1 hour → 2 hours → Off → 30 min) and persist immediately, then show a brief
+/// confirmation — the same double-tap pattern as the "Auto Face" tile.
+async fn toggle_burn_in(display: &mut screen::Display) {
+    let next = screen::next_burn_in_index(screen::burn_in_index());
+    screen::persist_burn_in_interval(next);
+
+    // Brief confirmation showing the new interval.
+    display.clear_buffer();
+    screen_edit_base(display, "Burn-in");
+    display.set_text_color(true);
+    let label = screen::burn_in_label(next);
     let w = label.len() as i16 * 12;
     let x = (config::SCREEN_WIDTH as i16 - w) / 2;
     display.set_text_size(2);

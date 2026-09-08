@@ -62,6 +62,8 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
     clock::init_clock_style();
     // Restore the persisted auto-rotate interval ("Auto Face" setting).
     clock::init_rotate_interval();
+    // Restore the persisted burn-in shift interval (Settings → "Burn-in").
+    screen::init_burn_in_interval();
 
     // `None` when the SD card is unusable / has no faces.
     let mut player = face_player::Player::new(driver);

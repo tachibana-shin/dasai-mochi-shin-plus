@@ -6,6 +6,7 @@
 //! screen helpers (brightness, centred frame drawing) that the rest of the
 //! firmware builds on.
 
+use core::sync::atomic::{AtomicU8, Ordering};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::peripherals::{GPIO20, GPIO21, I2C0};
 use esp_hal::time::Rate;
@@ -13,6 +14,7 @@ use esp_hal::Blocking;
 use oled_i2c::Oled;
 
 use crate::config;
+use crate::storage;
 
 /// The concrete display: SH1106 OLED, 128x64, on the board's I2C0 bus.
 pub type Display = Oled<I2c<'static, Blocking>>;
@@ -54,29 +56,105 @@ const BURN_IN_COL: [u8; 4] = [
     BURN_IN_BASE_COL,
 ];
 const BURN_IN_LINE: [u8; 4] = [0, 0, 1, 1];
-/// 30 minutes in milliseconds.
-const BURN_IN_INTERVAL_MS: u64 = 30 * 60 * 1000;
+
+/// Burn-in shift interval options shown in Settings → "Burn-in". The persisted
+/// byte is the index into this table.
+///
+/// **Index 0 must be the default (`"30 min"`), not "Off"**: older firmware
+/// versions wrote `0x00` padding to the config byte this setting now owns, so
+/// an upgraded device reads byte `0x00` — which must map back to the default,
+/// otherwise burn-in silently starts disabled.
+pub const BURN_IN_OPTIONS: &[(&str, u32)] = &[
+    ("30 min", 30 * 60_000),      // 0 — default
+    ("15 min", 15 * 60_000),      // 1
+    ("1 hour", 60 * 60_000),      // 2
+    ("2 hours", 2 * 60 * 60_000), // 3
+    ("Off", 0),                   // 4
+];
+
+/// Default burn-in interval ("30 min", index into [`BURN_IN_OPTIONS`]).
+pub const BURN_IN_DEFAULT_INDEX: u8 = 0;
+
+/// Runtime burn-in interval selection, backed by flash and restored at boot.
+static BURN_IN: AtomicU8 = AtomicU8::new(BURN_IN_DEFAULT_INDEX);
+
+/// Clamp a burn-in interval index into [`BURN_IN_OPTIONS`].
+fn clamp_burn_in(i: u8) -> u8 {
+    i.min((BURN_IN_OPTIONS.len() - 1) as u8)
+}
+
+/// The selected burn-in interval index.
+pub fn burn_in_index() -> u8 {
+    clamp_burn_in(BURN_IN.load(Ordering::Acquire))
+}
+
+/// Human-readable label for a burn-in interval index (e.g. `"30 min"`,
+/// `"Off"`); matches the [`BURN_IN_OPTIONS`] table.
+pub fn burn_in_label(index: u8) -> &'static str {
+    BURN_IN_OPTIONS[clamp_burn_in(index) as usize].0
+}
+
+/// The next interval in the settings rotation, wrapping from the last back to
+/// the default.
+pub fn next_burn_in_index(index: u8) -> u8 {
+    (clamp_burn_in(index) + 1) % BURN_IN_OPTIONS.len() as u8
+}
+
+/// Restore the persisted burn-in interval at boot.
+pub fn init_burn_in_interval() {
+    let v = storage::load_burn_in_interval().min((BURN_IN_OPTIONS.len() - 1) as u8);
+    BURN_IN.store(v, Ordering::Release);
+}
+
+/// Set the burn-in interval in memory only; call [`persist_burn_in_interval`]
+/// to store it permanently.
+fn set_burn_in_interval(index: u8) {
+    BURN_IN.store(clamp_burn_in(index), Ordering::Release);
+}
+
+/// Persist the burn-in interval to flash.
+pub fn persist_burn_in_interval(index: u8) {
+    let v = clamp_burn_in(index);
+    set_burn_in_interval(v);
+    storage::save_burn_in_interval(v);
+}
+
+/// The shift interval in milliseconds, or `None` when burn-in is disabled.
+fn burn_in_interval_ms() -> Option<u64> {
+    let (_, ms) = BURN_IN_OPTIONS[burn_in_index() as usize];
+    (ms > 0).then_some(ms as u64)
+}
 
 // SAFETY: single-threaded embassy executor; only the router task accesses these.
 static mut BURN_IN_DEADLINE_MS: u64 = 0;
 static mut BURN_IN_STEP: u8 = 0;
 
-/// Check if 30 minutes have passed since the last pixel shift; if so, advance
-/// the 4-step orbit and apply the hardware offset to the display.
+/// Check whether the configured burn-in shift interval has elapsed since the
+/// last shift; if so, advance the 4-step orbit and apply the hardware offset
+/// to the display. When burn-in is set to "Off" this is a no-op (and the
+/// deadline resets, so re-enabling starts a fresh interval).
+///
+/// Cheap enough to call on every redraw: one timestamp read + one u64 compare.
 pub fn maybe_burn_in_shift(display: &mut Display) {
+    let Some(interval_ms) = burn_in_interval_ms() else {
+        unsafe {
+            BURN_IN_DEADLINE_MS = 0;
+        }
+        return;
+    };
     let now_ms: u64 = esp_hal::time::Instant::now()
         .duration_since_epoch()
         .as_millis();
     unsafe {
         if BURN_IN_DEADLINE_MS == 0 {
-            BURN_IN_DEADLINE_MS = now_ms + BURN_IN_INTERVAL_MS;
+            BURN_IN_DEADLINE_MS = now_ms + interval_ms;
         }
         if now_ms >= BURN_IN_DEADLINE_MS {
             BURN_IN_STEP = (BURN_IN_STEP + 1) % 4;
             let i = BURN_IN_STEP as usize;
             let _ = display.set_column_offset(BURN_IN_COL[i]);
             let _ = display.set_start_line(BURN_IN_LINE[i]);
-            BURN_IN_DEADLINE_MS = now_ms + BURN_IN_INTERVAL_MS;
+            BURN_IN_DEADLINE_MS = now_ms + interval_ms;
         }
     }
 }
