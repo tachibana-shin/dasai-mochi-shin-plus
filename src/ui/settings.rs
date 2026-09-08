@@ -47,6 +47,11 @@ enum TileKind {
     RotateFace,
     /// Burn-in pixel-shift interval (Settings → "Burn-in").
     BurnIn,
+    /// Clock-interlude interval — how often the face player pops the clock
+    /// (Settings → "Clock Pop").
+    Interlude,
+    /// Clock-interlude duration — how long each pop stays (Settings → "Pop Time").
+    InterludeTime,
     /// Action: force the SoftAP provisioning mode back up.
     ForceAp,
 }
@@ -67,6 +72,8 @@ const TILES: &[Tile] = &[
     Tile { title: "Clock Face", kind: TileKind::ClockFace },
     Tile { title: "Auto Face", kind: TileKind::RotateFace },
     Tile { title: "Burn-in", kind: TileKind::BurnIn },
+    Tile { title: "Clock Pop", kind: TileKind::Interlude },
+    Tile { title: "Pop Time", kind: TileKind::InterludeTime },
     Tile { title: "AP Setup", kind: TileKind::ForceAp },
 ];
 
@@ -100,6 +107,8 @@ pub async fn show(display: &mut screen::Display, tap: &'static TapChannel, brigh
                 TileKind::ClockFace => toggle_clock_face(display).await,
                 TileKind::RotateFace => toggle_rotate_face(display).await,
                 TileKind::BurnIn => toggle_burn_in(display).await,
+                TileKind::Interlude => toggle_interlude(display).await,
+                TileKind::InterludeTime => toggle_interlude_time(display).await,
                 TileKind::ForceAp => trigger_force_ap(display).await,
             },
             Gesture::TripleTap => return Screen::FacePlayer,
@@ -222,6 +231,20 @@ fn draw_value(display: &mut screen::Display, kind: TileKind, brightness: u8, tex
             // Burn-in shift interval on the right, e.g. "30 min", "Off" — from
             // the shared [`screen::BURN_IN_OPTIONS`] table.
             let s = screen::burn_in_label(screen::burn_in_index());
+            let w = s.len() as i16 * glyph_w;
+            display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
+        }
+        TileKind::Interlude => {
+            // How often the clock pops between faces, e.g. "2 min", "Off" —
+            // from the shared [`clock::INTERLUDE_OPTIONS`] table.
+            let s = clock::interlude_label(clock::interlude_index());
+            let w = s.len() as i16 * glyph_w;
+            display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
+        }
+        TileKind::InterludeTime => {
+            // How long each clock pop stays, e.g. "30 s" — from the shared
+            // [`clock::INTERLUDE_TIME_OPTIONS`] table.
+            let s = clock::interlude_time_label(clock::interlude_time_index());
             let w = s.len() as i16 * glyph_w;
             display.draw_str_with((right - w).max(0), y + (12i16 - 8i16) / 2, s, &FONT_5X7);
         }
@@ -520,6 +543,51 @@ async fn toggle_burn_in(display: &mut screen::Display) {
     screen_edit_base(display, "Burn-in");
     display.set_text_color(true);
     let label = screen::burn_in_label(next);
+    let w = label.len() as i16 * 12;
+    let x = (config::SCREEN_WIDTH as i16 - w) / 2;
+    display.set_text_size(2);
+    display.draw_str_with(x, 24, label, &FONT_5X7);
+    display.set_text_size(1);
+    display.draw_str_with(4, 40, "saved", &FONT_5X7);
+    let _ = display.flush();
+
+    embassy_time::Timer::after_millis(700).await;
+}
+
+/// "Clock Pop" tile action: cycle the clock-interlude interval (Off → 2 min →
+/// 5 min → 15 min → 30 min → Off) and persist immediately, then show a brief
+/// confirmation — the same double-tap pattern as the other option tiles.
+async fn toggle_interlude(display: &mut screen::Display) {
+    let next = clock::next_interlude_index(clock::interlude_index());
+    clock::persist_interlude_interval(next);
+
+    // Brief confirmation showing the new interval.
+    display.clear_buffer();
+    screen_edit_base(display, "Clock Pop");
+    display.set_text_color(true);
+    let label = clock::interlude_label(next);
+    let w = label.len() as i16 * 12;
+    let x = (config::SCREEN_WIDTH as i16 - w) / 2;
+    display.set_text_size(2);
+    display.draw_str_with(x, 24, label, &FONT_5X7);
+    display.set_text_size(1);
+    display.draw_str_with(4, 40, "saved", &FONT_5X7);
+    let _ = display.flush();
+
+    embassy_time::Timer::after_millis(700).await;
+}
+
+/// "Pop Time" tile action: cycle the interlude duration (10 s → 30 s → 1 min →
+/// 2 min → 10 s) and persist immediately, then show a brief confirmation.
+async fn toggle_interlude_time(display: &mut screen::Display) {
+    let next = clock::next_interlude_time_index(clock::interlude_time_index());
+    clock::persist_interlude_time(next);
+
+    // Brief confirmation showing the new duration.
+    display.clear_buffer();
+    screen_edit_base(display, "Pop Time");
+    display.set_text_color(true);
+    let label = clock::interlude_time_label(next);
     let w = label.len() as i16 * 12;
     let x = (config::SCREEN_WIDTH as i16 - w) / 2;
     display.set_text_size(2);

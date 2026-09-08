@@ -22,6 +22,7 @@ use crate::drivers::sd::{self, FacesInfo, Sd, SdDriver};
 use crate::drivers::tap::{self, Gesture, TapChannel};
 use crate::qgif::QgifHeader;
 use crate::router::{Prev, Screen};
+use crate::ui::clock;
 
 /// Owns the face-player state: an initialised SD card and the face list.
 /// Setup happens once in [`Player::new`].
@@ -34,6 +35,11 @@ pub struct Player {
     /// [`Player::step`] re-opens the same face and resumes at `next_frame`
     /// instead of restarting from frame 0.
     paused: Option<PauseFace>,
+    /// The clock interlude is shown at most once every configured interval
+    /// (Settings → "Clock Pop") instead of after every single face, so long
+    /// face sessions stay on the faces and only interrupt for a clock
+    /// intermittently.
+    next_clock_at: embassy_time::Instant,
 }
 
 /// Resumable playback position inside a face (stored while the display is
@@ -69,7 +75,21 @@ impl Player {
             frame_buf: [0u8; config::SCREEN_FRAME_BUF_SIZE],
             face_idx: 0,
             paused: None,
+            // Show the clock once after the first face, then at most once every
+            // configured interlude interval (default 2 minutes) thereafter.
+            next_clock_at: embassy_time::Instant::now(),
         })
+    }
+
+    /// Reset the interlude deadline (e.g. after a manual sticky-clock visit) so
+    /// the clock does not pop again right after the user leaves. When the
+    /// interlude is off the deadline is set to "now" — the end-of-face check is
+    /// skipped entirely while off, and re-enabling it then pops after the next
+    /// face (immediate feedback that the feature is on).
+    pub fn reset_clock_timer(&mut self) {
+        let interval = clock::interlude_interval_ms().unwrap_or(0);
+        self.next_clock_at = embassy_time::Instant::now()
+            + embassy_time::Duration::from_millis(interval as u64);
     }
 
     /// Play one face and return the next screen.
@@ -165,7 +185,21 @@ impl Player {
 
         file.close();
         self.face_idx = (self.face_idx + 1) % self.info.faces.len();
-        Screen::FacePlayer
+
+        // Clock interlude: once the configured interval has elapsed, pop the
+        // selected clock face for the configured duration, then resume faces.
+        // "Off" → never pop (the router still opens the clock on double-tap).
+        let Some(interval_ms) = clock::interlude_interval_ms() else {
+            return Screen::FacePlayer;
+        };
+        let now = embassy_time::Instant::now();
+        if now >= self.next_clock_at {
+            self.next_clock_at =
+                now + embassy_time::Duration::from_millis(interval_ms as u64);
+            clock::show_clock_interlude(display, clock::interlude_duration_ms(), tap).await
+        } else {
+            Screen::FacePlayer
+        }
     }
 }
 

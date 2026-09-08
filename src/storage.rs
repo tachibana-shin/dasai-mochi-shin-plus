@@ -19,21 +19,26 @@ use esp_storage::ll;
 
 use crate::config;
 use crate::drivers::screen::{BURN_IN_DEFAULT_INDEX, BURN_IN_OPTIONS};
-use crate::ui::clock::{FACES, ROTATE_DEFAULT_INDEX, ROTATE_OPTIONS};
+use crate::ui::clock::{
+    FACES, INTERLUDE_DEFAULT_INDEX, INTERLUDE_OPTIONS, INTERLUDE_TIME_DEFAULT_INDEX,
+    INTERLUDE_TIME_OPTIONS, ROTATE_DEFAULT_INDEX, ROTATE_OPTIONS,
+};
 
 /// Physical flash offset of the config sector (4 KB aligned).
 const STORAGE_OFFSET: u32 = 0x001F_0000;
 /// Flash sector size in bytes (ESP32-C3 NOR flash).
 const SECTOR_SIZE: u32 = 4096;
 /// Bytes we use in the sector:
-/// `[magic: 4][brightness: 1][clock_style: 1][gmt_offset: i32][rotate: 1][burn_in: 1]`.
+/// `[magic: 4][brightness: 1][clock_style: 1][gmt_offset: i32][rotate: 1][burn_in: 1][interlude: 1][interlude_time: 1]`.
 /// Brightness lives at byte 4 (unchanged from the original layout for
 /// compatibility); the clock-face style previously sat in the reserved byte at
 /// index 5; the UTC offset occupies bytes 6..10; the auto-rotate interval
-/// (index into [`ROTATE_OPTIONS`]) occupies byte 10 and the burn-in shift
-/// interval (index into [`BURN_IN_OPTIONS`]) byte 11 (formerly padding). Total
-/// 12, exactly filling the word-aligned read length.
-const STORAGE_LEN: usize = 12;
+/// (index into [`ROTATE_OPTIONS`]) occupies byte 10; the burn-in shift interval
+/// (index into [`BURN_IN_OPTIONS`]) byte 11 (formerly padding); the interlude
+/// interval (index into [`INTERLUDE_OPTIONS`]) and duration (index into
+/// [`INTERLUDE_TIME_OPTIONS`]) bytes 12 and 13 (formerly erased `0xFF`, so any
+/// out-of-range read clamps to the defaults). Total 16.
+const STORAGE_LEN: usize = 16;
 /// Byte index of the brightness value within the sector.
 const BRIGHTNESS_BYTE: usize = 4;
 /// Byte index of the clock-face style (`0` = analog, `1` = digital, `2` = palm).
@@ -47,17 +52,23 @@ const ROTATE_BYTE: usize = 10;
 /// within the sector. Was `0x00` padding in older firmware, which is why index
 /// `0` in [`BURN_IN_OPTIONS`] is the default "30 min" and not "Off".
 const BURN_IN_BYTE: usize = 11;
+/// Byte index of the clock-interlude interval (index into [`INTERLUDE_OPTIONS`],
+/// `0` = interlude off) within the sector.
+const INTERLUDE_BYTE: usize = 12;
+/// Byte index of the clock-interlude duration (index into
+/// [`INTERLUDE_TIME_OPTIONS`]) within the sector.
+const INTERLUDE_TIME_BYTE: usize = 13;
 
 /// Magic identifier distinguishing "ours" from freshly-erased (`0xFF`) flash.
 const MAGIC: u32 = 0xD45A_4A55;
 
-/// Read 12 raw bytes from the config sector into a little-endian byte slice.
+/// Read 16 raw bytes from the config sector into a little-endian byte slice.
 ///
-/// `raw` is a word-aligned `[u32; 3]` (required by the ROM read path); the
-/// returned slice views the same memory as 12 consecutive bytes, which is the
+/// `raw` is a word-aligned `[u32; 4]` (required by the ROM read path); the
+/// returned slice views the same memory as 16 consecutive bytes, which is the
 /// exact byte order stored in flash (RISC-V is little-endian).
-unsafe fn raw_bytes(raw: &[u32; 3]) -> [u8; 12] {
-    let mut out = [0u8; 12];
+unsafe fn raw_bytes(raw: &[u32; 4]) -> [u8; 16] {
+    let mut out = [0u8; 16];
     for (i, w) in raw.iter().enumerate() {
         out[i * 4] = *w as u8;
         out[i * 4 + 1] = (*w >> 8) as u8;
@@ -84,205 +95,181 @@ fn read_sector() -> Option<[u8; STORAGE_LEN]> {
     Some(bytes)
 }
 
-/// Load the stored brightness, or the default if nothing valid is stored.
-pub fn load_brightness() -> u8 {
-    let Some(bytes) = read_sector() else {
-        return config::BRIGHT.default;
-    };
-    bytes[BRIGHTNESS_BYTE].clamp(config::BRIGHT.min, config::BRIGHT.max)
+/// All persisted user settings, mirroring the config-sector byte layout. Every
+/// save operation read-modify-writes a full `Settings` so no other field is
+/// ever lost (the whole sector is erased on each save).
+#[derive(Clone, Copy)]
+struct Settings {
+    brightness: u8,
+    gmt: i32,
+    style: u8,
+    rotate: u8,
+    burn_in: u8,
+    interlude: u8,
+    interlude_time: u8,
 }
 
-/// Persist the brightness value across reboots (erases + rewrites the sector).
-/// The UTC offset and clock style are read back first so they aren't lost.
-pub fn save_brightness(value: u8) {
-    let gmt = load_raw_gmt();
-    let style = load_raw_clock_style();
-    let rotate = load_raw_rotate();
-    let burn_in = load_raw_burn_in();
-    unsafe {
-        let _ = ll::spiflash_unlock();
-        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
-    }
-    write_sector(value, gmt, style, rotate, burn_in);
-}
-
-/// Load the stored clock-face style (the [`crate::ui::clock::FACES`]
-/// index), falling back to the default if nothing valid is stored or the
-/// value is out of range.
-fn load_raw_clock_style() -> u8 {
-    let Some(bytes) = read_sector() else {
-        return config::CLOCK_DEFAULT_STYLE;
-    };
-    let v = bytes[CLOCK_STYLE_BYTE];
-    if v >= FACES.len() as u8 {
-        config::CLOCK_DEFAULT_STYLE
+/// Clamp-and-decode the raw byte at `index` against an option-table length,
+/// falling back to `default` when nothing valid is stored (fresh flash or an
+/// out-of-range byte, e.g. erased `0xFF`).
+fn decode(len: usize, bytes: &[u8; STORAGE_LEN], index: usize, default: u8) -> u8 {
+    let v = bytes[index];
+    if v >= len as u8 {
+        default
     } else {
         v
     }
 }
 
-/// Public clock-style loader, used at boot to restore the chosen face.
-pub fn load_clock_style() -> u8 {
-    load_raw_clock_style()
-}
-
-/// Persist the clock-face style across reboots, preserving brightness + offset.
-pub fn save_clock_style(value: u8) {
-    let brightness = load_brightness();
-    let gmt = load_raw_gmt();
-    let rotate = load_raw_rotate();
-    let burn_in = load_raw_burn_in();
-    unsafe {
-        let _ = ll::spiflash_unlock();
-        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
-    }
-    write_sector(brightness, gmt, value.min((FACES.len() - 1) as u8), rotate, burn_in);
-}
-
-/// Load the stored auto-rotate interval (index into [`ROTATE_OPTIONS`]),
-/// falling back to the default if nothing valid is stored or the value is out
-/// of range.
-fn load_raw_rotate() -> u8 {
+/// Read the whole config sector and decode every setting, or return all
+/// defaults if the magic is missing (fresh flash).
+fn load_settings() -> Settings {
     let Some(bytes) = read_sector() else {
-        return ROTATE_DEFAULT_INDEX;
+        return Settings {
+            brightness: config::BRIGHT.default,
+            gmt: config::TIME.gmt_offset_hours,
+            style: config::CLOCK_DEFAULT_STYLE,
+            rotate: ROTATE_DEFAULT_INDEX,
+            burn_in: BURN_IN_DEFAULT_INDEX,
+            interlude: INTERLUDE_DEFAULT_INDEX,
+            interlude_time: INTERLUDE_TIME_DEFAULT_INDEX,
+        };
     };
-    let v = bytes[ROTATE_BYTE];
-    if v >= ROTATE_OPTIONS.len() as u8 {
-        ROTATE_DEFAULT_INDEX
-    } else {
-        v
-    }
-}
-
-/// Public auto-rotate loader, used at boot to restore the interval setting.
-pub fn load_rotate_interval() -> u8 {
-    load_raw_rotate()
-}
-
-/// Persist the auto-rotate interval across reboots, preserving the other
-/// settings.
-pub fn save_rotate_interval(value: u8) {
-    let brightness = load_brightness();
-    let gmt = load_raw_gmt();
-    let style = load_raw_clock_style();
-    let burn_in = load_raw_burn_in();
-    unsafe {
-        let _ = ll::spiflash_unlock();
-        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
-    }
-    write_sector(
-        brightness,
-        gmt,
-        style,
-        value.min((ROTATE_OPTIONS.len() - 1) as u8),
-        burn_in,
-    );
-}
-
-/// Load the stored burn-in shift interval (index into [`BURN_IN_OPTIONS`]),
-/// falling back to the default if nothing valid is stored or the value is out
-/// of range.
-fn load_raw_burn_in() -> u8 {
-    let Some(bytes) = read_sector() else {
-        return BURN_IN_DEFAULT_INDEX;
-    };
-    let v = bytes[BURN_IN_BYTE];
-    if v >= BURN_IN_OPTIONS.len() as u8 {
-        BURN_IN_DEFAULT_INDEX
-    } else {
-        v
-    }
-}
-
-/// Public burn-in interval loader, used at boot to restore the setting.
-pub fn load_burn_in_interval() -> u8 {
-    load_raw_burn_in()
-}
-
-/// Persist the burn-in shift interval across reboots, preserving the other
-/// settings.
-pub fn save_burn_in_interval(value: u8) {
-    let brightness = load_brightness();
-    let gmt = load_raw_gmt();
-    let style = load_raw_clock_style();
-    let rotate = load_raw_rotate();
-    unsafe {
-        let _ = ll::spiflash_unlock();
-        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
-    }
-    write_sector(
-        brightness,
-        gmt,
-        style,
-        rotate,
-        value.min((BURN_IN_OPTIONS.len() - 1) as u8),
-    );
-}
-
-/// Load the stored UTC offset in whole hours, falling back to the default if
-/// nothing valid is stored (or the stored value is out of a sane range).
-fn load_raw_gmt() -> i32 {
-    let Some(bytes) = read_sector() else {
-        return config::TIME.gmt_offset_hours;
-    };
-    let v = i32::from_le_bytes([
+    let decode_at = |index: usize, len: usize, default: u8| decode(len, &bytes, index, default);
+    let gmt = i32::from_le_bytes([
         bytes[GMT_OFFSET_BYTE],
         bytes[GMT_OFFSET_BYTE + 1],
         bytes[GMT_OFFSET_BYTE + 2],
         bytes[GMT_OFFSET_BYTE + 3],
     ]);
-    if v < crate::time::GMT_MIN || v > crate::time::GMT_MAX {
-        config::TIME.gmt_offset_hours
-    } else {
-        v
+    Settings {
+        brightness: bytes[BRIGHTNESS_BYTE].clamp(config::BRIGHT.min, config::BRIGHT.max),
+        gmt: if gmt < crate::time::GMT_MIN || gmt > crate::time::GMT_MAX {
+            config::TIME.gmt_offset_hours
+        } else {
+            gmt
+        },
+        style: decode_at(CLOCK_STYLE_BYTE, FACES.len(), config::CLOCK_DEFAULT_STYLE),
+        rotate: decode_at(ROTATE_BYTE, ROTATE_OPTIONS.len(), ROTATE_DEFAULT_INDEX),
+        burn_in: decode_at(BURN_IN_BYTE, BURN_IN_OPTIONS.len(), BURN_IN_DEFAULT_INDEX),
+        interlude: decode_at(INTERLUDE_BYTE, INTERLUDE_OPTIONS.len(), INTERLUDE_DEFAULT_INDEX),
+        interlude_time: decode_at(
+            INTERLUDE_TIME_BYTE,
+            INTERLUDE_TIME_OPTIONS.len(),
+            INTERLUDE_TIME_DEFAULT_INDEX,
+        ),
     }
 }
 
-/// Public UTC-offset loader, used at boot to restore the persisted timezone.
-pub fn load_gmt_offset() -> i32 {
-    load_raw_gmt()
-}
-
-/// Persist the UTC offset across reboots, preserving the brightness value.
-pub fn save_gmt_offset(value: i32) {
-    let brightness = load_brightness();
-    let style = load_raw_clock_style();
-    let rotate = load_raw_rotate();
-    let burn_in = load_raw_burn_in();
-    unsafe {
-        let _ = ll::spiflash_unlock();
-        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
-    }
-    write_sector(
-        brightness,
-        value.clamp(crate::time::GMT_MIN, crate::time::GMT_MAX),
-        style,
-        rotate,
-        burn_in,
-    );
-}
-
-/// Write brightness, UTC offset, clock-face style, auto-rotate interval and
-/// burn-in interval to the config sector in one erase.
-fn write_sector(brightness: u8, gmt: i32, style: u8, rotate: u8, burn_in: u8) {
+/// Erase the config sector and write every setting in one pass. `raw` is
+/// word-aligned and the erase/write offsets are verified safe (see module
+/// docs); the ROM functions suspend the flash cache around the operation,
+/// exactly as esp-storage does.
+fn write_settings(s: &Settings) {
     let magic = MAGIC.to_le_bytes();
     let mut bytes = [0u8; STORAGE_LEN];
     bytes[0..4].copy_from_slice(&magic);
-    bytes[BRIGHTNESS_BYTE] = brightness;
-    bytes[CLOCK_STYLE_BYTE] = style;
-    bytes[GMT_OFFSET_BYTE..GMT_OFFSET_BYTE + 4].copy_from_slice(&gmt.to_le_bytes());
-    bytes[ROTATE_BYTE] = rotate;
-    bytes[BURN_IN_BYTE] = burn_in;
+    bytes[BRIGHTNESS_BYTE] = s.brightness;
+    bytes[CLOCK_STYLE_BYTE] = s.style;
+    bytes[GMT_OFFSET_BYTE..GMT_OFFSET_BYTE + 4].copy_from_slice(&s.gmt.to_le_bytes());
+    bytes[ROTATE_BYTE] = s.rotate;
+    bytes[BURN_IN_BYTE] = s.burn_in;
+    bytes[INTERLUDE_BYTE] = s.interlude;
+    bytes[INTERLUDE_TIME_BYTE] = s.interlude_time;
     let mut raw = [0u32; STORAGE_LEN / 4];
     for (i, block) in bytes.chunks_exact(4).enumerate() {
         raw[i] = u32::from_le_bytes([block[0], block[1], block[2], block[3]]);
     }
-    // SAFETY: same bounds rationale as `read_sector`; `raw` is word-aligned and
-    // the ROM functions are safe to call from flash-resident code (they suspend
-    // the cache around the operation, exactly as esp-storage does).
+    // SAFETY: same bounds rationale as `read_sector`.
     unsafe {
+        let _ = ll::spiflash_unlock();
+        let _ = ll::spiflash_erase_sector(STORAGE_OFFSET / SECTOR_SIZE);
         let _ = ll::spiflash_write(STORAGE_OFFSET, raw.as_ptr(), STORAGE_LEN as u32);
     }
+}
+
+/// Load the stored brightness, or the default if nothing valid is stored.
+pub fn load_brightness() -> u8 {
+    load_settings().brightness
+}
+
+/// Persist the brightness value across reboots.
+pub fn save_brightness(value: u8) {
+    let mut s = load_settings();
+    s.brightness = value;
+    write_settings(&s);
+}
+
+/// Public clock-style loader, used at boot to restore the chosen face.
+pub fn load_clock_style() -> u8 {
+    load_settings().style
+}
+
+/// Persist the clock-face style across reboots.
+pub fn save_clock_style(value: u8) {
+    let mut s = load_settings();
+    s.style = value.min((FACES.len() - 1) as u8);
+    write_settings(&s);
+}
+
+/// Public auto-rotate loader, used at boot to restore the interval setting.
+pub fn load_rotate_interval() -> u8 {
+    load_settings().rotate
+}
+
+/// Persist the auto-rotate interval across reboots.
+pub fn save_rotate_interval(value: u8) {
+    let mut s = load_settings();
+    s.rotate = value.min((ROTATE_OPTIONS.len() - 1) as u8);
+    write_settings(&s);
+}
+
+/// Public burn-in interval loader, used at boot to restore the setting.
+pub fn load_burn_in_interval() -> u8 {
+    load_settings().burn_in
+}
+
+/// Persist the burn-in shift interval across reboots.
+pub fn save_burn_in_interval(value: u8) {
+    let mut s = load_settings();
+    s.burn_in = value.min((BURN_IN_OPTIONS.len() - 1) as u8);
+    write_settings(&s);
+}
+
+/// Public UTC-offset loader, used at boot to restore the persisted timezone.
+pub fn load_gmt_offset() -> i32 {
+    load_settings().gmt
+}
+
+/// Persist the UTC offset across reboots.
+pub fn save_gmt_offset(value: i32) {
+    let mut s = load_settings();
+    s.gmt = value.clamp(crate::time::GMT_MIN, crate::time::GMT_MAX);
+    write_settings(&s);
+}
+
+/// Public interlude-interval loader, used at boot to restore the setting.
+pub fn load_interlude() -> u8 {
+    load_settings().interlude
+}
+
+/// Persist the interlude interval across reboots.
+pub fn save_interlude(value: u8) {
+    let mut s = load_settings();
+    s.interlude = value.min((INTERLUDE_OPTIONS.len() - 1) as u8);
+    write_settings(&s);
+}
+
+/// Public interlude-duration loader, used at boot to restore the setting.
+pub fn load_interlude_time() -> u8 {
+    load_settings().interlude_time
+}
+
+/// Persist the interlude duration across reboots.
+pub fn save_interlude_time(value: u8) {
+    let mut s = load_settings();
+    s.interlude_time = value.min((INTERLUDE_TIME_OPTIONS.len() - 1) as u8);
+    write_settings(&s);
 }
 
 // ---------------------------------------------------------------------------

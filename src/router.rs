@@ -64,6 +64,8 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
     clock::init_rotate_interval();
     // Restore the persisted burn-in shift interval (Settings → "Burn-in").
     screen::init_burn_in_interval();
+    // Restore the persisted clock-interlude settings ("Clock Pop" / "Pop Time").
+    clock::init_interlude();
 
     // `None` when the SD card is unusable / has no faces.
     let mut player = face_player::Player::new(driver);
@@ -116,11 +118,18 @@ pub async fn run(display: &mut Display, driver: SdDriver, tap: &'static TapChann
                 // TEMP(dev-test): while DEV_SKIP_BOOT is set we stick to the
                 // selected face forever (no rotation) so the face under design
                 // stays on screen while iterating. Inactive otherwise.
-                if config::DEV_SKIP_BOOT {
+                let next = if config::DEV_SKIP_BOOT {
                     clock::show_clock(display, u32::MAX, tap).await
                 } else {
                     clock::show_clock_sticky(display, tap).await
+                };
+                // Leaving the sticky clock resets the interlude deadline so it
+                // doesn't pop again right after the user navigates back to the
+                // faces (the interlude itself already resets its own deadline).
+                if let Some(p) = player.as_mut() {
+                    p.reset_clock_timer();
                 }
+                next
             }
             Screen::Settings => {
                 settings::show(display, tap, &mut brightness).await;

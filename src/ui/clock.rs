@@ -264,6 +264,115 @@ fn rotate_interval_ms() -> Option<u32> {
     (ms > 0).then_some(ms)
 }
 
+// ---------------------------------------------------------------------------
+// Clock interlude (the face player pops the clock between faces)
+// ---------------------------------------------------------------------------
+
+/// How often the face player interrupts itself to show the clock for a moment
+/// (Settings → "Clock Pop"). The persisted byte is the index into this table;
+/// index 0 ("Off") disables the interlude — the clock only appears when the
+/// user opens it.
+pub const INTERLUDE_OPTIONS: &[(&str, u32)] = &[
+    ("Off", 0),              // 0
+    ("2 min", 2 * 60_000),   // 1 — default
+    ("5 min", 5 * 60_000),   // 2
+    ("15 min", 15 * 60_000), // 3
+    ("30 min", 30 * 60_000), // 4
+];
+
+/// Default interlude interval ("2 min", index into [`INTERLUDE_OPTIONS`]).
+pub const INTERLUDE_DEFAULT_INDEX: u8 = 1;
+
+/// How long each interlude clock stays on screen (Settings → "Pop Time").
+pub const INTERLUDE_TIME_OPTIONS: &[(&str, u32)] = &[
+    ("10 s", 10_000),  // 0
+    ("30 s", 30_000),  // 1 — default
+    ("1 min", 60_000), // 2
+    ("2 min", 120_000), // 3
+];
+
+/// Default interlude duration ("30 s", index into [`INTERLUDE_TIME_OPTIONS`]).
+pub const INTERLUDE_TIME_DEFAULT_INDEX: u8 = 1;
+
+/// Runtime interlude settings, backed by flash and restored at boot.
+static INTERLUDE: AtomicU8 = AtomicU8::new(INTERLUDE_DEFAULT_INDEX);
+static INTERLUDE_TIME: AtomicU8 = AtomicU8::new(INTERLUDE_TIME_DEFAULT_INDEX);
+
+/// Clamp an interlude interval index into [`INTERLUDE_OPTIONS`].
+fn clamp_interlude(i: u8) -> u8 {
+    i.min((INTERLUDE_OPTIONS.len() - 1) as u8)
+}
+
+/// Clamp an interlude duration index into [`INTERLUDE_TIME_OPTIONS`].
+fn clamp_interlude_time(i: u8) -> u8 {
+    i.min((INTERLUDE_TIME_OPTIONS.len() - 1) as u8)
+}
+
+/// The selected interlude interval index (`0` = interlude off).
+pub fn interlude_index() -> u8 {
+    clamp_interlude(INTERLUDE.load(Ordering::Acquire))
+}
+
+/// The selected interlude duration index.
+pub fn interlude_time_index() -> u8 {
+    clamp_interlude_time(INTERLUDE_TIME.load(Ordering::Acquire))
+}
+
+/// Human-readable label for an interlude interval index (e.g. `"2 min"`,
+/// `"Off"`); matches the [`INTERLUDE_OPTIONS`] table.
+pub fn interlude_label(index: u8) -> &'static str {
+    INTERLUDE_OPTIONS[clamp_interlude(index) as usize].0
+}
+
+/// Human-readable label for an interlude duration index (e.g. `"30 s"`).
+pub fn interlude_time_label(index: u8) -> &'static str {
+    INTERLUDE_TIME_OPTIONS[clamp_interlude_time(index) as usize].0
+}
+
+/// The next interval in the settings rotation, wrapping from the last back to
+/// "Off".
+pub fn next_interlude_index(index: u8) -> u8 {
+    (clamp_interlude(index) + 1) % INTERLUDE_OPTIONS.len() as u8
+}
+
+/// The next duration in the settings rotation, wrapping to the first.
+pub fn next_interlude_time_index(index: u8) -> u8 {
+    (clamp_interlude_time(index) + 1) % INTERLUDE_TIME_OPTIONS.len() as u8
+}
+
+/// Restore the persisted interlude settings at boot.
+pub fn init_interlude() {
+    let v = crate::storage::load_interlude().min((INTERLUDE_OPTIONS.len() - 1) as u8);
+    INTERLUDE.store(v, Ordering::Release);
+    let t = crate::storage::load_interlude_time().min((INTERLUDE_TIME_OPTIONS.len() - 1) as u8);
+    INTERLUDE_TIME.store(t, Ordering::Release);
+}
+
+/// Persist the interlude interval to flash (also updates the in-memory value).
+pub fn persist_interlude_interval(index: u8) {
+    let v = clamp_interlude(index);
+    INTERLUDE.store(v, Ordering::Release);
+    crate::storage::save_interlude(v);
+}
+
+/// Persist the interlude duration to flash (also updates the in-memory value).
+pub fn persist_interlude_time(index: u8) {
+    let v = clamp_interlude_time(index);
+    INTERLUDE_TIME.store(v, Ordering::Release);
+    crate::storage::save_interlude_time(v);
+}
+
+/// Interlude interval in milliseconds, or `None` when the interlude is off.
+pub fn interlude_interval_ms() -> Option<u32> {
+    let (_, ms) = INTERLUDE_OPTIONS[interlude_index() as usize];
+    (ms > 0).then_some(ms)
+}
+
+/// How long the clock stays each interlude pop, in milliseconds.
+pub fn interlude_duration_ms() -> u32 {
+    INTERLUDE_TIME_OPTIONS[interlude_time_index() as usize].1
+}
+
 /// A pseudo-random scene-face index into [`FACES`] (within
 /// `SCENE_START..FACES.len()`). Seeded from the uptime counter — no RNG
 /// peripheral, cheap, plenty random to pick a face.
@@ -516,6 +625,14 @@ async fn show_one(
 /// for the dev-test boot path (`DEV_SKIP_BOOT`).
 pub async fn show_clock(display: &mut Display, ms: u32, tap: &'static TapChannel) -> Screen {
     show_one(display, clock_style(), ms, tap).await
+}
+
+/// Show the configured clock face for `duration_ms` — the "clock interlude"
+/// the face player opens between faces (Settings → "Clock Pop" / "Pop Time").
+/// Returns the next screen: the face player once the time elapses, settings on
+/// triple-tap, asleep on single-tap.
+pub async fn show_clock_interlude(display: &mut Display, duration_ms: u32, tap: &'static TapChannel) -> Screen {
+    show_one(display, clock_style(), duration_ms, tap).await
 }
 
 /// Show the clock indefinitely (until the user leaves): the face selected
